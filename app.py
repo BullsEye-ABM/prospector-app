@@ -382,7 +382,7 @@ def select_client(client: dict):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── 1. AI ─────────────────────────────────────────────────────────────────────
-def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False, propuesta_de_valor=None, excluir_dominios=None, excluir_nombres=None, razones_rechazo=None):
+def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False, propuesta_de_valor=None, excluir_dominios=None, excluir_nombres=None, razones_rechazo=None, lookalike_empresas=None):
     if demo:
         return [
             {"nombre_empresa":"Alegra",  "dominio_web":"alegra.com",
@@ -427,6 +427,18 @@ def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False,
         + (f"Razones de rechazo anteriores (evita empresas similares):\n"
            + "\n".join(f"- {rz}" for rz in (razones_rechazo or [])[:20]) + "\n\n"
            if razones_rechazo else "")
+        + (f"CLIENTES ACTUALES DEL CLIENTE (empresas de referencia – modelo lookalike):\n"
+           + "\n".join(
+               f"- {e.get('nombre_empresa','')}"
+               + (f" ({e.get('industria','')})" if e.get('industria') else "")
+               + (f", {e.get('pais','')}" if e.get('pais') else "")
+               + (f", {e.get('tamano_empleados','')}" if e.get('tamano_empleados') else "")
+               + (f", {e.get('dominio_web','')}" if e.get('dominio_web') else "")
+               for e in (lookalike_empresas or [])[:30]
+           ) + "\n"
+           "Analiza los patrones comunes de estas empresas (industria, tamaño, país, tipo de negocio, modelo de revenue) "
+           "y recomienda empresas con un perfil MUY SIMILAR a ellas. Prioriza empresas que se parezcan a este grupo de referencia.\n\n"
+           if lookalike_empresas else "")
         + f"Genera exactamente {n} empresas REALES del mercado objetivo que cumplan todos los criterios.\n"
         "Usa la propuesta de valor y los dolores que soluciona para identificar empresas que realmente necesiten esta solución.\n"
         "Responde ÚNICAMENTE con un JSON array válido. Sin texto adicional.\n"
@@ -1775,6 +1787,88 @@ if st.session_state.show_client_form:
                 except Exception as _exc_err:
                     st.error(f"Error leyendo el archivo: {_exc_err}")
 
+        # ── Clientes actuales (Lookalike) ───────────────────────────────────────
+        if editing:
+            st.markdown("---")
+            st.markdown("##### 🎯 Clientes actuales (Lookalike)")
+            st.caption("Sube un Excel con los clientes actuales de este cliente. La IA usará estas empresas como referencia para recomendar empresas **similares** (modelo lookalike). Columnas sugeridas: **nombre_empresa**, **industria**, **pais**, **tamano_empleados**, **dominio_web**.")
+            _look_current = editing_data.get("lookalike_companies") or []
+            if _look_current:
+                st.caption(f"📋 Lista actual: **{len(_look_current)} empresas** de referencia lookalike.")
+                with st.expander("Ver lista lookalike"):
+                    import pandas as _pd_look
+                    _df_look_show = _pd_look.DataFrame(_look_current)
+                    _look_cols = [c for c in ["nombre_empresa","industria","pais","tamano_empleados","dominio_web"] if c in _df_look_show.columns]
+                    st.dataframe(_df_look_show[_look_cols], use_container_width=True, hide_index=True)
+                if st.button("🗑️ Eliminar lista lookalike", key="del_look_btn"):
+                    _db_look_del = get_db()
+                    if _db_look_del:
+                        _db_look_del.update_client(editing, {"lookalike_companies": []})
+                        if st.session_state.selected_client:
+                            st.session_state.selected_client["lookalike_companies"] = []
+                        _look_del_idx = next((i for i, c in enumerate(st.session_state.clients_list or []) if c.get("id") == editing), None)
+                        if _look_del_idx is not None:
+                            st.session_state.clients_list[_look_del_idx]["lookalike_companies"] = []
+                        st.success("✅ Lista lookalike eliminada.")
+                        st.rerun()
+            _look_file = st.file_uploader(
+                "Subir / reemplazar Excel de clientes actuales",
+                type=["xlsx", "xls", "csv"],
+                key="look_companies_file",
+                help="La lista anterior se reemplazará. Columnas sugeridas: nombre_empresa, dominio_web, industria, pais, tamano_empleados.",
+            )
+            if _look_file:
+                try:
+                    import pandas as _pd_look2
+                    _df_look = _pd_look2.read_excel(_look_file) if not _look_file.name.endswith(".csv") else _pd_look2.read_csv(_look_file)
+                    _df_look.columns = [c.strip().lower().replace(" ", "_") for c in _df_look.columns]
+                    _col_alias_look = {
+                        "empresa": "nombre_empresa", "company": "nombre_empresa", "name": "nombre_empresa",
+                        "nombre_de_la_empresa": "nombre_empresa", "company_name": "nombre_empresa",
+                        "account_name": "nombre_empresa", "cuenta": "nombre_empresa", "cliente": "nombre_empresa",
+                        "dominio": "dominio_web", "domain": "dominio_web", "website": "dominio_web",
+                        "url": "dominio_web", "web": "dominio_web", "sitio_web": "dominio_web",
+                        "industry": "industria", "sector": "industria",
+                        "country": "pais", "country_code": "pais", "location": "pais", "ubicacion": "pais",
+                        "employees": "tamano_empleados", "num_employees": "tamano_empleados",
+                        "headcount": "tamano_empleados", "employee_count": "tamano_empleados", "size": "tamano_empleados",
+                    }
+                    _df_look.rename(columns={k: v for k, v in _col_alias_look.items() if k in _df_look.columns}, inplace=True)
+                    if "nombre_empresa" not in _df_look.columns:
+                        _first_txt_look = next((c for c in _df_look.columns if _df_look[c].dtype == object), None)
+                        if _first_txt_look:
+                            _df_look.rename(columns={_first_txt_look: "nombre_empresa"}, inplace=True)
+                    _look_parsed = []
+                    for _, _row in _df_look.fillna("").iterrows():
+                        _e_look = {
+                            "nombre_empresa"  : str(_row.get("nombre_empresa", "")).strip(),
+                            "dominio_web"     : str(_row.get("dominio_web", "")).strip().lower(),
+                            "industria"       : str(_row.get("industria", "")).strip(),
+                            "pais"            : str(_row.get("pais", "")).strip(),
+                            "tamano_empleados": str(_row.get("tamano_empleados", "")).strip(),
+                        }
+                        _e_look = {k: v for k, v in _e_look.items() if v and v != "nan"}
+                        if _e_look.get("nombre_empresa") or _e_look.get("dominio_web"):
+                            _look_parsed.append(_e_look)
+                    if _look_parsed:
+                        st.success(f"✅ **{len(_look_parsed)} empresas** de referencia encontradas en el archivo.")
+                        if st.button("💾 Guardar lista lookalike", key="save_look_btn", type="primary"):
+                            _db_look = get_db()
+                            if _db_look:
+                                _db_look.update_client(editing, {"lookalike_companies": _look_parsed})
+                                if st.session_state.selected_client:
+                                    st.session_state.selected_client["lookalike_companies"] = _look_parsed
+                                _look_save_idx = next((i for i, c in enumerate(st.session_state.clients_list or []) if c.get("id") == editing), None)
+                                if _look_save_idx is not None:
+                                    st.session_state.clients_list[_look_save_idx]["lookalike_companies"] = _look_parsed
+                                st.success(f"✅ Lista lookalike guardada: **{len(_look_parsed)} empresas** de referencia.")
+                            else:
+                                st.warning("Supabase no configurado.")
+                    else:
+                        st.warning("No se encontraron empresas en el archivo.")
+                except Exception as _look_err:
+                    st.error(f"Error leyendo el archivo: {_look_err}")
+
         c1, c2, c3 = st.columns([2,1,1])
         with c1:
             if st.button("💾 Guardar cliente", type="primary"):
@@ -2618,6 +2712,7 @@ with tab3:
                                          _dominios_rechazados |
                                          _excl_perm_dominios)
                         _razones_rech = [r.get("razon_rechazo","").strip() for r in st.session_state.empresas_rechazadas if r.get("razon_rechazo","").strip()]
+                        _lookalike = (st.session_state.selected_client or {}).get("lookalike_companies") or None
                         empresas = get_company_recommendations(
                             st.session_state.icp, st.session_state.buyer_persona,
                             st.session_state.criterios,
@@ -2625,7 +2720,8 @@ with tab3:
                             propuesta_de_valor=st.session_state.propuesta_de_valor,
                             excluir_dominios=ya_vistos,
                             excluir_nombres=_excl_perm_nombres or None,
-                            razones_rechazo=_razones_rech or None)
+                            razones_rechazo=_razones_rech or None,
+                            lookalike_empresas=_lookalike)
                         st.session_state.empresas           = empresas
                         st.session_state.empresas_aprobadas = []
                         st.session_state.done_empresas      = False
@@ -2904,6 +3000,7 @@ with tab3:
 
                         with st.spinner(f"Buscando {n_rechazadas} empresas alternativas…"):
                             try:
+                                _lookalike2 = (st.session_state.selected_client or {}).get("lookalike_companies") or None
                                 nuevas = get_company_recommendations(
                                     st.session_state.icp,
                                     st.session_state.buyer_persona,
@@ -2912,6 +3009,7 @@ with tab3:
                                     demo=False,
                                     propuesta_de_valor=st.session_state.propuesta_de_valor,
                                     excluir_dominios=ya_vistos,
+                                    lookalike_empresas=_lookalike2,
                                 )
                                 for e in nuevas:
                                     e["aprobada"] = True
