@@ -995,7 +995,7 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
     if titulos_excluir:
         excl_vals = "%2C".join(
             f"(text%3A{_snav(e)}%2CselectionType%3AEXCLUDED)"
-            for e in titulos_excluir[:8] if e.strip()
+            for e in titulos_excluir if e.strip()
         )
         if excl_vals:
             # Sales Navigator requiere AMBOS filtros para que la exclusión funcione
@@ -1012,9 +1012,10 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
 
     if titulos:
         # Keywords con doble-encoding (espacios → %2520, acentos → %25XX)
+        # Sin límite de cargos — Sales Navigator soporta URLs largas
         kw_str = " OR ".join(
             t.strip().replace('"', '').replace("(", "").replace(")", "")
-            for t in titulos[:8]
+            for t in titulos
         )
         query_parts.append(f"keywords%3A{_snav(kw_str)}")
 
