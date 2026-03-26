@@ -1613,7 +1613,7 @@ with st.sidebar:
 
     st.divider()
 
-    DEMO = st.toggle("⚠️ Modo Demo", value=True,
+    DEMO = st.toggle("⚠️ Modo Demo", value=False,
                      help="Usa datos ficticios. No requiere API keys.")
 
     st.divider()
