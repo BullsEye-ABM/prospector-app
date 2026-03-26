@@ -1526,6 +1526,18 @@ def build_excel_hubspot(contacts, empresas=None, client_name="", particularidade
 if st.session_state.clients_list is None:
     load_clients()
 
+# Auto-restaurar cliente desde query params al refrescar la página
+_qp_client_id = st.query_params.get("c", "")
+if (_qp_client_id
+        and not st.session_state.selected_client_id
+        and st.session_state.clients_list):
+    _auto_client = next(
+        (c for c in st.session_state.clients_list if str(c["id"]) == str(_qp_client_id)),
+        None
+    )
+    if _auto_client:
+        select_client(_auto_client)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1624,6 +1636,7 @@ with st.sidebar:
             client_obj = next((c for c in clients if c["id"] == new_id), None)
             if client_obj:
                 select_client(client_obj)
+                st.query_params["c"] = str(new_id)
                 st.rerun()
     else:
         st.caption("No hay clientes aún.")
@@ -2268,8 +2281,11 @@ with tab0:
                     db.update_client(st.session_state.selected_client_id,
                                      {"propuesta_de_valor": new_pv})
                     st.session_state.selected_client["propuesta_de_valor"] = new_pv
-                except: pass
-            st.success(f"✅ Propuesta de valor guardada para **{client_name}**. Continúa en ICP →")
+                    st.success(f"✅ Propuesta de valor guardada para **{client_name}**. Continúa en ICP →")
+                except Exception as _epv:
+                    st.error(f"❌ Error al guardar en Supabase: {_epv}")
+            else:
+                st.success(f"✅ Propuesta de valor guardada para **{client_name}**. Continúa en ICP →")
 
 
 # ── TAB 1 · ICP ───────────────────────────────────────────────────────────────
