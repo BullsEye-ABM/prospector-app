@@ -2958,21 +2958,16 @@ with tab3:
                                 "razon_rechazo"  : "",
                                 "fecha_rechazo"  : datetime.now().strftime("%Y-%m-%d"),
                             })
-                    # Acumular dominios vistos (aprobadas + rechazadas) para que la IA no las repita
-                    _todos_dominios_vistos = list(
-                        set(st.session_state.processed_domains or []) |
-                        {e.get("dominio_web","") for e in empresas_actualizadas if e.get("dominio_web")}
-                    )
-                    st.session_state.processed_domains = _todos_dominios_vistos
+                    # Solo guardar rechazadas — las aprobadas se marcan como prospectadas
+                    # manualmente al final del flujo con el botón "Marcar como ya prospectadas"
                     _db_conf = get_db()
                     if _db_conf and st.session_state.selected_client_id:
                         try:
                             _db_conf.update_client(st.session_state.selected_client_id, {
                                 "empresas_rechazadas": st.session_state.empresas_rechazadas,
-                                "processed_domains"  : _todos_dominios_vistos,
                             })
                         except Exception as _e_conf:
-                            st.warning(f"⚠️ No se pudo guardar en BD: {_e_conf}. Asegúrate de haber corrido el SQL en Supabase para agregar las columnas `empresas_rechazadas` y `processed_domains`.")
+                            st.warning(f"⚠️ No se pudo guardar en BD: {_e_conf}.")
                     st.session_state.done_empresas = True
                     st.success(f"✅ {n_aprobadas} empresas aprobadas. {len(_rechazadas_nuevas)} nuevas rechazadas registradas.")
 
@@ -3652,6 +3647,35 @@ with tab6:
 
         with _col_dl6:
             pass
+
+        # ── Marcar empresas como ya prospectadas ──────────────────────────────
+        st.divider()
+        _empresas_para_marcar = st.session_state.empresas_aprobadas or st.session_state.empresas
+        _n_para_marcar = len([e for e in _empresas_para_marcar if e.get("dominio_web")])
+        if _n_para_marcar > 0:
+            st.markdown("#### ✅ ¿Terminaste la prospección de estas empresas?")
+            st.caption(
+                f"Al marcar las **{_n_para_marcar} empresas** como ya prospectadas, "
+                "la IA no las volverá a recomendar en futuras búsquedas."
+            )
+            if st.button(f"📌 Marcar {_n_para_marcar} empresa{'s' if _n_para_marcar != 1 else ''} como ya prospectadas",
+                         key="marcar_prospectadas", use_container_width=True):
+                _db_mark = get_db()
+                _dominios_nuevos = {e.get("dominio_web","").lower() for e in _empresas_para_marcar if e.get("dominio_web")}
+                _todos_procesados = list(
+                    set(st.session_state.processed_domains or []) | _dominios_nuevos
+                )
+                st.session_state.processed_domains = _todos_procesados
+                if _db_mark and st.session_state.selected_client_id:
+                    try:
+                        _db_mark.update_client(st.session_state.selected_client_id, {
+                            "processed_domains": _todos_procesados,
+                        })
+                        st.success(f"✅ {_n_para_marcar} empresas marcadas como ya prospectadas. La IA las excluirá en futuras búsquedas.")
+                    except Exception as _e_mark:
+                        st.error(f"Error al guardar: {_e_mark}")
+                else:
+                    st.success(f"✅ {_n_para_marcar} empresas marcadas como ya prospectadas (solo en sesión).")
 
 # ── TAB 7 · HISTORIAL ────────────────────────────────────────────────────────
 with tab7:
