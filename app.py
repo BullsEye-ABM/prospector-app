@@ -355,14 +355,15 @@ def select_client(client: dict):
     st.session_state.done_pv            = bool(client.get("propuesta_de_valor"))
     st.session_state.done_icp           = bool(client.get("icp"))
     st.session_state.done_bp            = bool(client.get("buyer_persona"))
-    # Resetear pasos del pipeline al cambiar de cliente
-    st.session_state.empresas            = []
-    st.session_state.empresas_aprobadas  = []
+    # Restaurar empresas activas desde Supabase (persisten hasta marcarlas como prospectadas)
+    _empresas_guardadas = _parse_json_field(client.get("empresas_activas")) or []
+    st.session_state.empresas            = _empresas_guardadas
+    st.session_state.empresas_aprobadas  = [e for e in _empresas_guardadas if e.get("aprobada", True)]
+    st.session_state.done_empresas       = bool(_empresas_guardadas)
     st.session_state.contactos_clay      = []
     st.session_state.contactos_aprobados = []
     st.session_state.contactos_clay = []
     st.session_state.contactos_final= []
-    st.session_state.done_empresas  = False
     st.session_state.done_clay      = False
     st.session_state.done_enrich               = False
     st.session_state.clay_pushed               = False
@@ -2742,6 +2743,14 @@ with tab3:
                         st.session_state.empresas           = empresas
                         st.session_state.empresas_aprobadas = []
                         st.session_state.done_empresas      = False
+                        # Persistir en Supabase para que sobrevivan refrescos y cambios de ICP/BP
+                        try:
+                            _db_persist = get_db()
+                            if _db_persist and st.session_state.selected_client_id:
+                                _db_persist.update_client(st.session_state.selected_client_id,
+                                                          {"empresas_activas": empresas})
+                        except Exception:
+                            pass
                         try:
                             _db_log = get_db()
                             if _db_log and hasattr(_db_log, "log_usage"):
@@ -2974,13 +2983,13 @@ with tab3:
                                 "razon_rechazo"  : "",
                                 "fecha_rechazo"  : datetime.now().strftime("%Y-%m-%d"),
                             })
-                    # Solo guardar rechazadas — las aprobadas se marcan como prospectadas
-                    # manualmente al final del flujo con el botón "Marcar como ya prospectadas"
+                    # Guardar rechazadas + empresas activas (persisten hasta marcar como prospectadas)
                     _db_conf = get_db()
                     if _db_conf and st.session_state.selected_client_id:
                         try:
                             _db_conf.update_client(st.session_state.selected_client_id, {
                                 "empresas_rechazadas": st.session_state.empresas_rechazadas,
+                                "empresas_activas"   : empresas_actualizadas,
                             })
                         except Exception as _e_conf:
                             st.warning(f"⚠️ No se pudo guardar en BD: {_e_conf}.")
@@ -3686,7 +3695,11 @@ with tab6:
                     try:
                         _db_mark.update_client(st.session_state.selected_client_id, {
                             "processed_domains": _todos_procesados,
+                            "empresas_activas" : [],   # limpiar para próximo ciclo
                         })
+                        st.session_state.empresas           = []
+                        st.session_state.empresas_aprobadas = []
+                        st.session_state.done_empresas      = False
                         st.success(f"✅ {_n_para_marcar} empresas marcadas como ya prospectadas. La IA las excluirá en futuras búsquedas.")
                     except Exception as _e_mark:
                         st.error(f"Error al guardar: {_e_mark}")
