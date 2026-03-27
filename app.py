@@ -2451,12 +2451,12 @@ with tab0:
     pv_propuesta = st.text_area(
         "Propuesta de valor",
         value=saved_pv.get("propuesta", ""),
-        max_chars=300,
-        height=100,
-        placeholder="Describe qué hace tu empresa y qué valor único entrega a sus clientes (máx. 300 caracteres).",
-        help="Máximo 300 caracteres.",
+        max_chars=500,
+        height=120,
+        placeholder="Describe qué hace tu empresa y qué valor único entrega a sus clientes (máx. 500 caracteres).",
+        help="Máximo 500 caracteres.",
     )
-    chars_left = 300 - len(pv_propuesta)
+    chars_left = 500 - len(pv_propuesta)
     st.caption(f"{chars_left} caracteres restantes")
 
     pv_dolores = st.text_area(
@@ -2590,6 +2590,41 @@ with tab1:
                     format_func=lambda v: f"{v:,}+" if v == 50000 else f"{v:,}",
                     key="emp_max")
             empleados = (_emp_min_sel, _emp_max_sel)
+
+            # ── Facturación anual ─────────────────────────────────────────────
+            _tam_fac = saved_icp.get("tamano_empresa", {})
+            _ignorar_fac = _tam_fac.get("ignorar_facturacion", True)
+            ignorar_facturacion = st.checkbox(
+                "No considerar filtro de facturación anual",
+                value=_ignorar_fac,
+                key="ignorar_facturacion_cb",
+            )
+            if not ignorar_facturacion:
+                _FAC_OPCIONES = [500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000,
+                                 20_000_000, 50_000_000, 100_000_000, 500_000_000]
+                def _fmt_fac(v):
+                    if v >= 1_000_000: return f"USD {v//1_000_000}M"
+                    return f"USD {v//1_000}K"
+                _fac_min_def = _tam_fac.get("facturacion_min", 1_000_000)
+                _fac_max_def = _tam_fac.get("facturacion_max", 50_000_000)
+                def _snap_fac(val): return min(_FAC_OPCIONES, key=lambda x: abs(x - val))
+                _fac_col1, _fac_col2 = st.columns(2)
+                with _fac_col1:
+                    _fac_min_sel = st.selectbox("Facturación mínima",
+                        options=_FAC_OPCIONES,
+                        index=_FAC_OPCIONES.index(_snap_fac(_fac_min_def)),
+                        format_func=_fmt_fac, key="fac_min")
+                with _fac_col2:
+                    _fac_max_opts = [v for v in _FAC_OPCIONES if v >= _fac_min_sel]
+                    _fac_max_snap = _snap_fac(_fac_max_def)
+                    _fac_max_idx  = _fac_max_opts.index(_fac_max_snap) if _fac_max_snap in _fac_max_opts else len(_fac_max_opts)-1
+                    _fac_max_sel  = st.selectbox("Facturación máxima",
+                        options=_fac_max_opts, index=_fac_max_idx,
+                        format_func=_fmt_fac, key="fac_max")
+                facturacion = (_fac_min_sel, _fac_max_sel)
+            else:
+                facturacion = None
+
             modelo = st.radio("Modelo de negocio",
                 ["B2B","B2B y B2C","Marketplace B2B"], horizontal=True,
                 index=["B2B","B2B y B2C","Marketplace B2B"].index(saved_icp.get("modelo_negocio","B2B")))
@@ -2651,10 +2686,18 @@ with tab1:
             if not industrias or not geografias:
                 st.error("Selecciona al menos una industria y un país.")
             else:
+                _tam_empresa_save = {
+                    "empleados_min"      : empleados[0],
+                    "empleados_max"      : empleados[1],
+                    "ignorar_facturacion": ignorar_facturacion,
+                }
+                if facturacion:
+                    _tam_empresa_save["facturacion_min"] = facturacion[0]
+                    _tam_empresa_save["facturacion_max"] = facturacion[1]
                 new_icp = {
                     "industrias"    : industrias,
                     "geografias"    : geografias,
-                    "tamano_empresa": {"empleados_min":empleados[0],"empleados_max":empleados[1]},
+                    "tamano_empresa": _tam_empresa_save,
                     "modelo_negocio": modelo,
                     "senales_fit"   : senales,
                     "exclusiones"   : [e.strip() for e in exclusiones.splitlines() if e.strip()],
@@ -3453,9 +3496,15 @@ with tab4:
                                 _destino_emails = set()
                                 _destino_ids    = set()
 
-                            # Normalizar y filtrar solo los que NO están ya en destino
+                            # Cargar contactos previamente rechazados por BP (para no re-evaluar con IA)
+                            _bp_rejected = set(
+                                (st.session_state.selected_client or {}).get("bp_rejected_contacts") or []
+                            )
+
+                            # Normalizar y filtrar solo los que NO están ya en destino ni rechazados
                             _norm4 = []
                             _ya_en_destino = 0
+                            _ya_rechazados_bp = 0
                             for _lc in _raw4:
                                 _fc  = _lc.get("fields") or {}
                                 _fn4 = _fc.get("firstName") or _lc.get("firstName") or ""
@@ -3477,6 +3526,11 @@ with tab4:
                                     _ya_en_destino += 1
                                     continue
 
+                                # Saltar si ya fue rechazado por BP anteriormente
+                                if _em4 and _em4 in _bp_rejected:
+                                    _ya_rechazados_bp += 1
+                                    continue
+
                                 _norm4.append({
                                     "lead_id"     : _id4,
                                     "full_name"   : f"{_fn4} {_ln4}".strip(),
@@ -3488,9 +3542,13 @@ with tab4:
                                     "linkedin_url": _li4,
                                 })
 
+                            _omit_msgs = []
                             if _ya_en_destino > 0:
-                                st.info(f"⏭️ Se omitieron **{_ya_en_destino} contactos** que ya estaban "
-                                        f"en la campaña destino. Procesando **{len(_norm4)} nuevos**.")
+                                _omit_msgs.append(f"**{_ya_en_destino}** ya estaban en la campaña destino")
+                            if _ya_rechazados_bp > 0:
+                                _omit_msgs.append(f"**{_ya_rechazados_bp}** ya fueron rechazados por BP anteriormente")
+                            if _omit_msgs:
+                                st.info(f"⏭️ Se omitieron {' y '.join(_omit_msgs)}. Procesando **{len(_norm4)} nuevos**.")
                             else:
                                 st.write(f"✅ {len(_norm4)} contactos nuevos para filtrar")
                         except Exception as _e4r:
@@ -3505,6 +3563,28 @@ with tab4:
                             _rechazados4 = [c for c in _norm4 if c.get("lead_id") not in _aprobados_ids]
                             st.session_state.t4_filtrados  = _aprobados4
                             st.session_state.t4_rechazados = _rechazados4
+
+                            # Guardar rechazados en Supabase para no re-evaluarlos
+                            try:
+                                _db_rech4 = get_db()
+                                if _db_rech4 and st.session_state.selected_client_id:
+                                    _prev_rech = list(
+                                        (st.session_state.selected_client or {}).get("bp_rejected_contacts") or []
+                                    )
+                                    _nuevos_rech = [
+                                        c.get("email","").lower()
+                                        for c in _rechazados4
+                                        if c.get("email","").strip()
+                                    ]
+                                    _merged_rech = list(set(_prev_rech + _nuevos_rech))
+                                    _db_rech4.update_client(
+                                        st.session_state.selected_client_id,
+                                        {"bp_rejected_contacts": _merged_rech}
+                                    )
+                                    if st.session_state.selected_client:
+                                        st.session_state.selected_client["bp_rejected_contacts"] = _merged_rech
+                            except Exception:
+                                pass
 
                         st.success(
                             f"🤖 Filtro completado: **{len(_aprobados4)} aprobados** "
@@ -3522,11 +3602,32 @@ with tab4:
                                     except Exception as _ea4:
                                         _errores4.append(f"{_ct4.get('full_name','?')}: {_ea4}")
                                     _prog4.progress((_pi4 + 1) / len(_aprobados4))
+                            # Verificar cuántos se agregaron realmente (Lemlist deduplicar silenciosamente)
+                            try:
+                                _destino_post = _lm4.get_campaign_leads(_cid4, limit=1000)
+                                _destino_post_emails = {(l.get("email") or "").lower() for l in _destino_post if l.get("email")}
+                                _realmente_agregados = sum(
+                                    1 for c in _aprobados4
+                                    if (c.get("email") or "").lower() in _destino_post_emails
+                                    and (c.get("email") or "").lower() not in _destino_emails
+                                )
+                            except Exception:
+                                _realmente_agregados = len(_aprobados4) - len(_errores4)
                             if _errores4:
                                 st.warning(f"⚠️ {len(_errores4)} contactos no se pudieron agregar "
                                            f"(probablemente ya estaban en la campaña).")
+                            if _realmente_agregados == len(_aprobados4):
+                                st.success(f"✅ {_realmente_agregados} contactos agregados a «{_sel_camp4}»")
+                            elif _realmente_agregados > 0:
+                                _omitidos_lm = len(_aprobados4) - len(_errores4) - _realmente_agregados
+                                st.success(f"✅ {_realmente_agregados} contactos agregados a «{_sel_camp4}»")
+                                if _omitidos_lm > 0:
+                                    st.caption(
+                                        f"ℹ️ {_omitidos_lm} contacto(s) no se agregaron porque ya estaban "
+                                        f"en esta u otra campaña activa de Lemlist."
+                                    )
                             else:
-                                st.success(f"✅ {len(_aprobados4)} contactos agregados a «{_sel_camp4}»")
+                                st.info("ℹ️ Los contactos seleccionados ya estaban en la campaña destino.")
                             st.info(
                                 "**Próximo paso:** En Lemlist, activa el enrichment de email y "
                                 "teléfono para los contactos nuevos de la campaña. "
@@ -3749,8 +3850,12 @@ with tab5:
                                 )
                                 _job   = (_f.get("jobTitle") or _f.get("job_title") or _f.get("title") or _f.get("position") or
                                           lead.get("jobTitle") or lead.get("job_title") or lead.get("title") or lead.get("position") or "")
-                                _comp  = (_f.get("companyName") or _f.get("company") or _f.get("company_name") or
-                                          lead.get("companyName") or lead.get("company") or lead.get("company_name") or "")
+                                _comp  = (
+                                    _f.get("companyName") or _f.get("company") or _f.get("company_name") or
+                                    _f.get("organization") or _f.get("organizationName") or
+                                    lead.get("companyName") or lead.get("company") or lead.get("company_name") or
+                                    lead.get("organization") or lead.get("organizationName") or ""
+                                )
                                 _ctry  = (_f.get("country") or _f.get("location") or
                                           lead.get("country") or lead.get("location") or "")
                                 _contacts_norm.append({
@@ -4284,20 +4389,18 @@ with tab8:
 
     # ── Verificar si las columnas necesarias existen en Supabase ──────────────
     _client_raw = st.session_state.selected_client or {}
-    _faltan_cols = [
-        col for col in ["empresas_rechazadas", "processed_domains", "export_history"]
-        if col not in _client_raw
-    ]
+    _cols_requeridas = ["empresas_rechazadas", "processed_domains", "export_history", "bp_rejected_contacts"]
+    _faltan_cols = [col for col in _cols_requeridas if col not in _client_raw]
     if _faltan_cols:
-        st.error(
+        st.warning(
             f"⚠️ **Columnas faltantes en Supabase**: `{'`, `'.join(_faltan_cols)}`\n\n"
-            "Por eso los datos desaparecen al recargar — no se pueden guardar en la base de datos.\n\n"
-            "**Solución:** Ve a [Supabase → SQL Editor](https://supabase.com/dashboard) y ejecuta:"
+            "Ejecuta el siguiente SQL en Supabase para habilitarlas — solo se hace una vez:"
         )
         st.code(
-            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS empresas_rechazadas JSONB DEFAULT '[]'::jsonb;\n"
-            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS processed_domains    JSONB DEFAULT '[]'::jsonb;\n"
-            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS export_history       JSONB DEFAULT '[]'::jsonb;",
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS empresas_rechazadas  JSONB DEFAULT '[]'::jsonb;\n"
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS processed_domains     JSONB DEFAULT '[]'::jsonb;\n"
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS export_history        JSONB DEFAULT '[]'::jsonb;\n"
+            "ALTER TABLE clients ADD COLUMN IF NOT EXISTS bp_rejected_contacts  JSONB DEFAULT '[]'::jsonb;",
             language="sql"
         )
         st.info("Después de ejecutar el SQL, recarga la página y los datos se guardarán correctamente.")
