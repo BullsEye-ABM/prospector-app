@@ -3433,24 +3433,50 @@ with tab4:
                     _cid4  = _camp_obj4.get("_id")   or _camp_obj4.get("id","")
                     _bp4   = st.session_state.buyer_persona or {}
 
-                    # Paso A: Cargar contactos de la campaña origen
-                    with st.spinner(f"Cargando contactos de la campaña «{_sel_origen4}»…"):
+                    # Paso A: Cargar contactos de origen Y los que ya están en destino
+                    with st.spinner(f"Cargando contactos…"):
                         try:
                             _raw4 = _lm4.get_campaign_contacts(_oid4, limit=1000)
-                            # Normalizar
+
+                            # Obtener emails/IDs ya en campaña destino para no reprocesar
+                            try:
+                                _destino_leads = _lm4.get_campaign_leads(_cid4, limit=1000)
+                                _destino_emails = {
+                                    (l.get("email") or "").lower()
+                                    for l in _destino_leads if l.get("email")
+                                }
+                                _destino_ids = {
+                                    l.get("contactId") or l.get("_id") or ""
+                                    for l in _destino_leads
+                                }
+                            except Exception:
+                                _destino_emails = set()
+                                _destino_ids    = set()
+
+                            # Normalizar y filtrar solo los que NO están ya en destino
                             _norm4 = []
+                            _ya_en_destino = 0
                             for _lc in _raw4:
-                                _fc = _lc.get("fields") or {}
+                                _fc  = _lc.get("fields") or {}
                                 _fn4 = _fc.get("firstName") or _lc.get("firstName") or ""
                                 _ln4 = _fc.get("lastName")  or _lc.get("lastName")  or ""
                                 _jt4 = (_fc.get("jobTitle") or _fc.get("job_title") or
                                         _lc.get("jobTitle") or _lc.get("job_title") or "")
                                 _co4 = (_fc.get("companyName") or _fc.get("company") or
                                         _lc.get("companyName") or _lc.get("company") or "")
-                                _em4 = _lc.get("email") or _fc.get("email") or ""
+                                _em4 = (_lc.get("email") or _fc.get("email") or "").lower()
                                 _li4 = (_lc.get("linkedinUrlSalesNav") or _lc.get("linkedinUrl") or
                                         _fc.get("linkedinUrl") or "")
                                 _id4 = _lc.get("_id") or _lc.get("id") or _em4
+
+                                # Saltar si ya está en campaña destino
+                                if _em4 and _em4 in _destino_emails:
+                                    _ya_en_destino += 1
+                                    continue
+                                if _id4 and _id4 in _destino_ids:
+                                    _ya_en_destino += 1
+                                    continue
+
                                 _norm4.append({
                                     "lead_id"     : _id4,
                                     "full_name"   : f"{_fn4} {_ln4}".strip(),
@@ -3461,14 +3487,19 @@ with tab4:
                                     "email"       : _em4,
                                     "linkedin_url": _li4,
                                 })
-                            st.write(f"✅ {len(_norm4)} contactos cargados de la campaña")
+
+                            if _ya_en_destino > 0:
+                                st.info(f"⏭️ Se omitieron **{_ya_en_destino} contactos** que ya estaban "
+                                        f"en la campaña destino. Procesando **{len(_norm4)} nuevos**.")
+                            else:
+                                st.write(f"✅ {len(_norm4)} contactos nuevos para filtrar")
                         except Exception as _e4r:
                             st.error(f"❌ Error cargando campaña: {_e4r}")
                             _norm4 = []
 
                     if _norm4:
-                        # Paso B: Filtrar con IA por Buyer Persona
-                        with st.spinner(f"🤖 Claude filtrando {len(_norm4)} contactos por Buyer Persona…"):
+                        # Paso B: Filtrar con IA por Buyer Persona (solo contactos nuevos)
+                        with st.spinner(f"🤖 Claude filtrando {len(_norm4)} contactos nuevos por Buyer Persona…"):
                             _aprobados4 = filtrar_contactos_bp_ia(_norm4, _bp4)
                             _aprobados_ids = {a.get("lead_id") for a in _aprobados4}
                             _rechazados4 = [c for c in _norm4 if c.get("lead_id") not in _aprobados_ids]
