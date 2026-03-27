@@ -2601,8 +2601,9 @@ with tab1:
             )
             if not ignorar_facturacion:
                 _FAC_OPCIONES = [500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000,
-                                 20_000_000, 50_000_000, 100_000_000, 500_000_000]
+                                 20_000_000, 50_000_000, 100_000_000, 500_000_000, 1_000_000_001]
                 def _fmt_fac(v):
+                    if v > 500_000_000: return "USD +500M"
                     if v >= 1_000_000: return f"USD {v//1_000_000}M"
                     return f"USD {v//1_000}K"
                 _fac_min_def = _tam_fac.get("facturacion_min", 1_000_000)
