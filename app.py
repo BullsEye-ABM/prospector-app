@@ -490,9 +490,10 @@ def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
 
     client = _anth.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    cargos_obj  = buyer_persona.get("cargos_objetivo", [])
-    cargos_excl = buyer_persona.get("cargos_excluidos", [])
-    roles       = buyer_persona.get("roles_compra", {})
+    cargos_obj   = buyer_persona.get("cargos_objetivo", [])
+    cargos_excl  = buyer_persona.get("cargos_excluidos", [])
+    roles        = buyer_persona.get("roles_compra", {})
+    correcciones = buyer_persona.get("correcciones_ia", [])
 
     _contactos_txt = _json.dumps([{
         "id"      : c.get("lead_id") or c.get("email",""),
@@ -501,18 +502,33 @@ def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
         "empresa" : c.get("company_name",""),
     } for c in contactos], ensure_ascii=False, indent=2)
 
+    # Incluir correcciones previas del usuario como ejemplos de aprendizaje
+    _correcciones_txt = ""
+    if correcciones:
+        _correcciones_txt = (
+            "\n📚 Correcciones anteriores del usuario (aprende de estos ejemplos):\n" +
+            "\n".join(
+                f"- Cargo '{c.get('cargo','')}' @ {c.get('empresa','')} → "
+                f"{'APROBAR' if c.get('decision')=='aprobado' else 'RECHAZAR'}: {c.get('nota','')}"
+                for c in correcciones[-15:]
+            ) + "\n"
+        )
+
     prompt = (
         "Eres un experto en prospección B2B. Revisa esta lista de contactos y determina "
         "cuáles encajan con el Buyer Persona objetivo.\n\n"
         f"Cargos objetivo: {', '.join(cargos_obj)}\n"
         f"Cargos a excluir: {', '.join(cargos_excl)}\n"
-        f"Roles de compra buscados: {_json.dumps(roles, ensure_ascii=False)}\n\n"
+        f"Roles de compra buscados: {_json.dumps(roles, ensure_ascii=False)}\n"
+        f"{_correcciones_txt}\n"
         f"Contactos a revisar:\n{_contactos_txt}\n\n"
         "Criterios para aprobar:\n"
         "- El cargo coincide (exacto o similar) con alguno de los cargos objetivo\n"
         "- El cargo NO está en la lista de excluidos\n"
-        "- El cargo corresponde a un tomador de decisión o influenciador relevante\n\n"
-        "Sé estricto: rechaza cargos operativos, técnicos sin decisión de compra, o que no encajen.\n\n"
+        "- El cargo corresponde a un tomador de decisión o influenciador relevante\n"
+        "- Usa las correcciones anteriores del usuario como guía para casos similares\n\n"
+        "Sé estricto pero considera el contexto: un 'Owner' de empresa dental es válido "
+        "aunque el nombre de la empresa no mencione 'dental'.\n\n"
         'Devuelve SOLO un JSON: [{"id": "...", "aprobado": true/false, "razon": "..."}, ...]\n'
         "No agregues texto antes ni después del JSON."
     )
@@ -3487,10 +3503,70 @@ with tab4:
                         st.markdown(f"- **{_cf.get('full_name','')}** — {_cf.get('job_title','')} @ "
                                     f"{_cf.get('company_name','')} "
                                     f"_{_cf.get('razon_bp','')}_")
+
             if st.session_state.t4_rechazados:
-                with st.expander(f"❌ {len(st.session_state.t4_rechazados)} contactos rechazados (no coinciden con BP)", expanded=False):
-                    for _cr in st.session_state.t4_rechazados:
-                        st.markdown(f"- {_cr.get('full_name','')} — {_cr.get('job_title','')}")
+                # Obtener campaña destino seleccionada para el botón de rescate
+                _camp_destino_rescate = next(
+                    (c for c in st.session_state.t4_campanas
+                     if c.get("name","") == st.session_state.get("t4_sel_camp","")), None
+                )
+                _cid_rescate = (_camp_destino_rescate.get("_id") or
+                                _camp_destino_rescate.get("id","")) if _camp_destino_rescate else ""
+
+                with st.expander(
+                    f"❌ {len(st.session_state.t4_rechazados)} contactos rechazados "
+                    f"— revisa si alguno fue error de la IA", expanded=True
+                ):
+                    st.caption("💡 Si la IA rechazó a alguien que SÍ debería pasar, "
+                               "haz clic en **✅ Agregar igualmente** — "
+                               "la IA aprenderá de tu corrección para la próxima vez.")
+                    for _ri, _cr in enumerate(st.session_state.t4_rechazados):
+                        _rcol1, _rcol2 = st.columns([5, 1])
+                        with _rcol1:
+                            st.markdown(
+                                f"**{_cr.get('full_name','')}** — "
+                                f"{_cr.get('job_title','')} @ {_cr.get('company_name','')}"
+                            )
+                        with _rcol2:
+                            if st.button("✅ Agregar", key=f"rescate_{_ri}",
+                                         use_container_width=True,
+                                         disabled=not bool(_cid_rescate),
+                                         help="Agregar a campaña destino y enseñar a la IA"):
+                                # 1. Agregar a campaña
+                                try:
+                                    _lm4.add_lead(_cid_rescate, _cr)
+                                    st.success(f"✅ {_cr.get('full_name','')} agregado a la campaña")
+                                except Exception as _err_rescate:
+                                    st.warning(f"No se pudo agregar: {_err_rescate}")
+
+                                # 2. Guardar corrección en Supabase para que la IA aprenda
+                                try:
+                                    _db_rescate = get_db()
+                                    if _db_rescate and st.session_state.selected_client_id:
+                                        _bp_actual = _parse_json_field(
+                                            (st.session_state.selected_client or {}).get("buyer_persona")
+                                        ) or {}
+                                        _correcciones = _bp_actual.get("correcciones_ia", [])
+                                        _correcciones.append({
+                                            "cargo"   : _cr.get("job_title",""),
+                                            "empresa" : _cr.get("company_name",""),
+                                            "decision": "aprobado",
+                                            "nota"    : "Corregido manualmente por el usuario"
+                                        })
+                                        # Mantener solo las últimas 30 correcciones
+                                        _correcciones = _correcciones[-30:]
+                                        _bp_actual["correcciones_ia"] = _correcciones
+                                        _db_rescate.update_client(
+                                            st.session_state.selected_client_id,
+                                            {"buyer_persona": _bp_actual}
+                                        )
+                                        if st.session_state.selected_client:
+                                            st.session_state.selected_client["buyer_persona"] = _bp_actual
+                                        st.session_state.buyer_persona = _bp_actual
+                                        st.caption("🧠 La IA recordó esta corrección para la próxima vez")
+                                except Exception:
+                                    pass
+                                st.rerun()
 
 
 # ── TAB 5 · ENRIQUECIMIENTO ───────────────────────────────────────────────────
