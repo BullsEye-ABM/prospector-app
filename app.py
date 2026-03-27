@@ -383,6 +383,99 @@ def select_client(client: dict):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── 1. AI ─────────────────────────────────────────────────────────────────────
+def auto_revisar_empresas_ia(empresas: list, icp: dict, buyer_persona: dict, criterios: dict,
+                              propuesta_de_valor: dict = None, razones_rechazo: list = None) -> list:
+    """
+    Usa Claude para revisar automáticamente una lista de empresas recomendadas
+    y decidir cuáles aprobar o rechazar según el ICP, criterios y razones de rechazo previas.
+    Devuelve la misma lista con campo 'aprobada' (bool) y 'razon_agente' (str).
+    """
+    import anthropic as _anth
+    import json as _json
+
+    client = _anth.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    # Construir contexto del cliente
+    _pv_txt = ""
+    if propuesta_de_valor:
+        _pv_txt = (f"Propuesta de valor: {propuesta_de_valor.get('propuesta','')}\n"
+                   f"Dolores que soluciona: {propuesta_de_valor.get('dolores','')}\n")
+
+    _icp_txt = (
+        f"Industrias objetivo: {', '.join(icp.get('industrias', []))}\n"
+        f"Geografías: {', '.join(icp.get('geografias', []))}\n"
+        f"Tamaño empresa: {icp.get('tamano_empresa', {})}\n"
+        f"Modelo de negocio: {icp.get('modelo_negocio', '')}\n"
+        f"Exclusiones: {', '.join(icp.get('exclusiones', []))}\n"
+    )
+
+    _criterios_txt = ""
+    if criterios:
+        _criterios_txt = f"Criterios adicionales: {_json.dumps(criterios, ensure_ascii=False)}\n"
+
+    _rechazos_txt = ""
+    if razones_rechazo:
+        _rechazos_txt = ("Razones de rechazo anteriores (aprende de estos patrones):\n" +
+                         "\n".join(f"- {r}" for r in razones_rechazo[:20]) + "\n")
+
+    _empresas_txt = _json.dumps([{
+        "nombre"  : e.get("nombre_empresa",""),
+        "dominio" : e.get("dominio_web",""),
+        "industria": e.get("industria",""),
+        "pais"    : e.get("pais",""),
+        "empleados": e.get("tamano_empleados",""),
+        "razon_fit": e.get("razon_fit",""),
+    } for e in empresas], ensure_ascii=False, indent=2)
+
+    prompt = (
+        "Eres un agente experto en prospección B2B. Tu tarea es revisar una lista de empresas "
+        "candidatas y decidir cuáles aprobar o rechazar según el perfil de cliente ideal (ICP).\n\n"
+        f"{_pv_txt}"
+        f"ICP:\n{_icp_txt}"
+        f"{_criterios_txt}"
+        f"{_rechazos_txt}\n"
+        f"Empresas a revisar:\n{_empresas_txt}\n\n"
+        "Para cada empresa devuelve tu decisión. Sé estricto: solo aprueba empresas que claramente "
+        "encajan con el ICP. Rechaza si hay dudas, si el país no está en el ICP, si el tamaño no "
+        "corresponde, si la industria es excluida, o si el patrón es similar a rechazos anteriores.\n\n"
+        "Devuelve SOLO un JSON válido con esta estructura:\n"
+        "[\n"
+        '  {"dominio": "empresa.com", "aprobada": true, "razon": "Encaja perfectamente: SaaS B2B en México con 100-500 empleados"},\n'
+        '  {"dominio": "otra.com",    "aprobada": false, "razon": "País no está en el ICP objetivo"},\n'
+        "  ...\n"
+        "]\n"
+        "No agregues texto antes ni después del JSON."
+    )
+
+    try:
+        resp = _claude_create(client,
+            model="claude-opus-4-5",
+            max_tokens=2000,
+            messages=[{"role":"user","content": prompt}])
+        raw = resp.content[0].text.strip()
+        # Limpiar posible markdown
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?","", raw)
+            raw = re.sub(r"\n?```$","", raw)
+        decisiones = _json.loads(raw)
+        # Mapear decisiones a empresas por dominio
+        dec_map = {d.get("dominio","").lower(): d for d in decisiones}
+        resultado = []
+        for e in empresas:
+            dom = e.get("dominio_web","").lower()
+            dec = dec_map.get(dom, {})
+            e["aprobada"]     = dec.get("aprobada", True)
+            e["razon_agente"] = dec.get("razon", "")
+            resultado.append(e)
+        return resultado
+    except Exception as ex:
+        # Si falla, devolver todas aprobadas con nota de error
+        for e in empresas:
+            e["aprobada"]     = True
+            e["razon_agente"] = f"[Error agente: {ex}]"
+        return empresas
+
+
 def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False, propuesta_de_valor=None, excluir_dominios=None, excluir_nombres=None, razones_rechazo=None, lookalike_empresas=None):
     if demo:
         return [
@@ -2884,7 +2977,7 @@ with tab3:
                     st.session_state[_ekey] = bool(_emp.get("aprobada", True))
 
             # ── Botones masivos ───────────────────────────────────────────────
-            _ba, _br, _ = st.columns([2, 2, 6])
+            _ba, _br, _bai, _ = st.columns([2, 2, 3, 1])
             if _ba.button("✅ Aprobar todas", key="aprobar_todas_emp", use_container_width=True):
                 for _ei, _emp in enumerate(st.session_state.empresas):
                     st.session_state[f"emp_estado_{_emp.get('dominio_web', _ei)}"] = True
@@ -2893,6 +2986,32 @@ with tab3:
                 for _ei, _emp in enumerate(st.session_state.empresas):
                     st.session_state[f"emp_estado_{_emp.get('dominio_web', _ei)}"] = False
                 st.rerun()
+            if _bai.button("🤖 Auto-revisar con IA", key="agente_revisar_emp", use_container_width=True,
+                           help="El agente IA revisa cada empresa según el ICP y decide automáticamente"):
+                with st.spinner("🤖 Agente revisando empresas según el ICP..."):
+                    _icp_ag   = st.session_state.icp or {}
+                    _bp_ag    = st.session_state.buyer_persona or {}
+                    _cr_ag    = {}
+                    _pv_ag    = st.session_state.propuesta_de_valor or {}
+                    _rech_ag  = [r.get("razon_rechazo","") for r in
+                                 (st.session_state.empresas_rechazadas or []) if r.get("razon_rechazo")]
+                    _revisadas = auto_revisar_empresas_ia(
+                        empresas         = list(st.session_state.empresas),
+                        icp              = _icp_ag,
+                        buyer_persona    = _bp_ag,
+                        criterios        = _cr_ag,
+                        propuesta_de_valor= _pv_ag,
+                        razones_rechazo  = _rech_ag,
+                    )
+                    st.session_state.empresas = _revisadas
+                    # Aplicar decisiones al session state de cada empresa
+                    for _ei2, _emp2 in enumerate(_revisadas):
+                        _ekey2 = f"emp_estado_{_emp2.get('dominio_web', _ei2)}"
+                        st.session_state[_ekey2] = bool(_emp2.get("aprobada", True))
+                    _n_ap = sum(1 for e in _revisadas if e.get("aprobada", True))
+                    _n_re = len(_revisadas) - _n_ap
+                    st.success(f"🤖 Agente completó la revisión: **{_n_ap} aprobadas**, **{_n_re} rechazadas** — revisa y ajusta si es necesario.")
+                    st.rerun()
 
             st.markdown("<hr style='margin:6px 0 10px 0'>", unsafe_allow_html=True)
 
@@ -2907,11 +3026,15 @@ with tab3:
                 _ind   = _clean(_emp.get("industria", ""))
                 _tam   = _clean(_emp.get("tamano_empleados", ""))
                 _rf    = _clean(_emp.get("razon_fit", ""))
+                _ragente = _clean(_emp.get("razon_agente", ""))
 
                 # Colores según estado
                 _bg    = "#e8f5e9" if _apro else "#ffebee"
                 _badge = "✅ Aprobada" if _apro else "❌ Rechazada"
                 _badge_color = "#2e7d32" if _apro else "#c62828"
+                _agente_html = (f'<div style="font-size:0.8rem;color:#666;margin-top:5px;'
+                                f'font-style:italic">🤖 Agente: {_ragente}</div>'
+                                if _ragente else "")
 
                 st.markdown(f"""
 <div style="background:{_bg};border-radius:10px;padding:14px 18px;margin-bottom:10px">
@@ -2924,6 +3047,7 @@ with tab3:
       <div style="font-weight:700;font-size:1rem;color:#1a1a1a">{_nom}</div>
       <div style="font-size:0.82rem;color:#555;margin-top:2px">{_pai} &nbsp;·&nbsp; {_ind} &nbsp;·&nbsp; {_tam} empleados</div>
       <div style="font-size:0.87rem;color:#333;margin-top:6px;line-height:1.5">{_rf}</div>
+      {_agente_html}
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
