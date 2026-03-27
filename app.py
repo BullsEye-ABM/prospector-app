@@ -3137,15 +3137,14 @@ with tab3:
                 _ind   = _html_esc.escape(_clean(_emp.get("industria", "")))
                 _tam   = _html_esc.escape(_clean(_emp.get("tamano_empleados", "")))
                 _rf    = _html_esc.escape(_clean(_emp.get("razon_fit", "")))
-                _ragente = _html_esc.escape(_clean(_emp.get("razon_agente", "")))
+                # Limpiar razon_agente: quitar tags HTML y solo mostrar si es texto real (>10 chars)
+                _ragente_raw = re.sub(r'<[^>]+>', '', _clean(_emp.get("razon_agente", ""))).strip()
+                _ragente     = _html_esc.escape(_ragente_raw) if len(_ragente_raw) > 10 else ""
 
                 # Colores según estado
                 _bg    = "#e8f5e9" if _apro else "#ffebee"
                 _badge = "✅ Aprobada" if _apro else "❌ Rechazada"
                 _badge_color = "#2e7d32" if _apro else "#c62828"
-                _agente_html = (f'<div style="font-size:0.8rem;color:#666;margin-top:5px;'
-                                f'font-style:italic">🤖 Agente: {_ragente}</div>'
-                                if _ragente else "")
 
                 st.markdown(f"""
 <div style="background:{_bg};border-radius:10px;padding:14px 18px;margin-bottom:10px">
@@ -3158,10 +3157,12 @@ with tab3:
       <div style="font-weight:700;font-size:1rem;color:#1a1a1a">{_nom}</div>
       <div style="font-size:0.82rem;color:#555;margin-top:2px">{_pai} &nbsp;·&nbsp; {_ind} &nbsp;·&nbsp; {_tam} empleados</div>
       <div style="font-size:0.87rem;color:#333;margin-top:6px;line-height:1.5">{_rf}</div>
-      {_agente_html}
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
+                # Razón del agente fuera del HTML para evitar inyección
+                if _ragente:
+                    st.caption(f"🤖 Agente: {_ragente_raw}")
 
                 # Botones de acción debajo de la tarjeta
                 _bc1, _bc2, _bc3, _bsite = st.columns([2, 2, 6, 1])
@@ -3527,6 +3528,8 @@ with tab4:
                                 f"**{_cr.get('full_name','')}** — "
                                 f"{_cr.get('job_title','')} @ {_cr.get('company_name','')}"
                             )
+                            if _cr.get("razon_bp"):
+                                st.caption(f"🤖 Rechazado porque: {_cr.get('razon_bp','')}")
                         with _rcol2:
                             if st.button("✅ Agregar", key=f"rescate_{_ri}",
                                          use_container_width=True,
