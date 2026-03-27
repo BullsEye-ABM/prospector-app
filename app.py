@@ -871,19 +871,45 @@ class LemlistClient:
         return data if isinstance(data, list) else data.get("lists", []) if isinstance(data, dict) else []
 
     def get_contact_list_leads(self, list_id: str, limit: int = 1000) -> list:
-        """Devuelve los leads de una lista de contactos."""
-        # Intentar primero /contacts/lists/{id}/leads, luego /contacts?listId=
+        """Devuelve los leads de una lista de contactos.
+        Lemlist requiere idsOrEmails, search o email en /contacts.
+        Usa /contacts/lists/{id}/leads primero, luego fallbacks con search.
+        """
+        # Intento 1: endpoint dedicado de lista
         try:
             data = self._get(f"/contacts/lists/{list_id}/leads", params={"limit": limit})
-            if isinstance(data, list):
+            if isinstance(data, list) and data:
                 return data
-            return data.get("leads", data.get("contacts", []))
+            if isinstance(data, dict):
+                result = data.get("leads", data.get("contacts", data.get("items", [])))
+                if result:
+                    return result
         except Exception:
-            # Fallback: /contacts?listId={id}
-            data = self._get("/contacts", params={"listId": list_id, "limit": limit})
+            pass
+
+        # Intento 2: /contacts con listId + search vacío (Lemlist requiere search|idsOrEmails|email)
+        try:
+            data = self._get("/contacts", params={"listId": list_id, "search": "", "limit": limit})
             if isinstance(data, list):
                 return data
-            return data.get("leads", data.get("contacts", []))
+            if isinstance(data, dict):
+                return data.get("leads", data.get("contacts", data.get("items", [])))
+        except Exception:
+            pass
+
+        # Intento 3: /contacts con listId + search wildcard
+        try:
+            data = self._get("/contacts", params={"listId": list_id, "search": " ", "limit": limit})
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get("leads", data.get("contacts", data.get("items", [])))
+        except Exception as _e:
+            raise Exception(
+                f"Lemlist no permite leer contactos de listas por API. "
+                f"Agrega los contactos a una campaña y usa esa campaña en su lugar. "
+                f"(Error técnico: {_e})"
+            )
 
     def create_campaign(self, name: str) -> dict:
         return self._post("/campaigns", {"name": name})
@@ -3085,16 +3111,17 @@ with tab3:
 
             # ── Filas de empresas ─────────────────────────────────────────────
             for _ei, _emp in enumerate(st.session_state.empresas):
+                import html as _html_esc
                 _ekey  = f"emp_estado_{_emp.get('dominio_web', _ei)}"
                 _apro  = st.session_state.get(_ekey, True)
-                _nom   = _emp.get("nombre_empresa", "Sin nombre")
+                _nom   = _html_esc.escape(_emp.get("nombre_empresa", "Sin nombre"))
                 _dom   = _emp.get("dominio_web", "")
                 _url   = f"https://{_dom}" if _dom and not _dom.startswith("http") else _dom
-                _pai   = _clean(_emp.get("pais", ""))
-                _ind   = _clean(_emp.get("industria", ""))
-                _tam   = _clean(_emp.get("tamano_empleados", ""))
-                _rf    = _clean(_emp.get("razon_fit", ""))
-                _ragente = _clean(_emp.get("razon_agente", ""))
+                _pai   = _html_esc.escape(_clean(_emp.get("pais", "")))
+                _ind   = _html_esc.escape(_clean(_emp.get("industria", "")))
+                _tam   = _html_esc.escape(_clean(_emp.get("tamano_empleados", "")))
+                _rf    = _html_esc.escape(_clean(_emp.get("razon_fit", "")))
+                _ragente = _html_esc.escape(_clean(_emp.get("razon_agente", "")))
 
                 # Colores según estado
                 _bg    = "#e8f5e9" if _apro else "#ffebee"
@@ -3308,12 +3335,8 @@ with tab4:
                 st.warning("⚠️ Sin filtro de países — el ICP no tiene geografías o la sesión se reinició. "
                            "Ve a la pestaña **ICP** y vuelve a guardar para aplicar el filtro de países.")
 
-        st.divider()
-
-        # ── Flujo manual con Lemlist plugin ──────────────────────────────────
-        st.markdown("#### 📋 Flujo de importación de contactos")
-
         if DEMO:
+            st.divider()
             st.info("⚠️ Modo Demo — contactos ficticios.")
             if st.button("▶ Generar contactos demo", type="primary"):
                 st.session_state.contactos_clay             = _demo_contacts()
@@ -3321,20 +3344,6 @@ with tab4:
                 st.session_state.contacts_pushed_to_enrich  = False
                 st.session_state.done_clay                  = False
                 st.rerun()
-        else:
-            st.info(
-                "**Flujo recomendado para importar contactos a Lemlist:**\n\n"
-                "1. 🚀 Haz clic en **«Abrir búsqueda en Sales Navigator»** (arriba) para revisar los leads\n"
-                "2. 🔌 Usa el **plugin de Lemlist** en el navegador para importar los leads a la lista "
-                "**«Contactos App Prospección (Por enriquecer)»** — sin activar enrichment aún\n"
-                "3. 📋 En Lemlist, filtra los perfiles fit y muévelos a la lista "
-                "**«Contactos Validados para enriquecer»**\n"
-                "4. ➕ En Lemlist, agrega esos contactos a la campaña **«Validados para enriquecer»** "
-                "— esto es necesario para que la API pueda leerlos\n"
-                "5. ✉️ En Lemlist, selecciona todos los contactos de esa campaña y activa el enrichment "
-                "(email + teléfono) manualmente\n"
-                "6. 📱 Vuelve aquí a la pestaña **Enriquecimiento** para completar los teléfonos faltantes con Lusha"
-            )
 
         st.divider()
 
@@ -3342,10 +3351,11 @@ with tab4:
         st.markdown("#### 🤖 Paso 2 · Filtrar contactos por Buyer Persona")
         st.info(
             "**Flujo:**\n"
-            "1. Pushea los contactos desde Sales Navigator a una **lista de Lemlist** (con el plugin)\n"
-            "2. Espera que Lemlist enriquezca los cargos (unos minutos)\n"
-            "3. Selecciona esa lista abajo → la app filtra automáticamente quiénes "
-            "coinciden con el Buyer Persona → los agrega a la campaña de enriquecimiento"
+            "1. 🔌 Usa el plugin de Lemlist para pushear contactos desde Sales Navigator "
+            "a una **campaña de staging** (ej: «Por revisar - App»)\n"
+            "2. ⏳ Espera que Lemlist enriquezca los cargos (unos minutos)\n"
+            "3. 🤖 Selecciona esa campaña abajo → la app filtra quiénes coinciden con el "
+            "Buyer Persona → los agrega automáticamente a la campaña de enriquecimiento"
         )
 
         _lm4 = LemlistClient(lemlist_key()) if lemlist_key() else None
@@ -3354,38 +3364,29 @@ with tab4:
             st.warning("⚠️ Configura la API Key de Lemlist en Editar Cliente para usar esta función.")
         else:
             # ── Inicializar session state ─────────────────────────────────────
-            if "t4_listas"       not in st.session_state: st.session_state.t4_listas       = []
-            if "t4_campanas"     not in st.session_state: st.session_state.t4_campanas     = []
-            if "t4_filtrados"    not in st.session_state: st.session_state.t4_filtrados    = []
-            if "t4_rechazados"   not in st.session_state: st.session_state.t4_rechazados   = []
+            if "t4_campanas"   not in st.session_state: st.session_state.t4_campanas   = []
+            if "t4_filtrados"  not in st.session_state: st.session_state.t4_filtrados  = []
+            if "t4_rechazados" not in st.session_state: st.session_state.t4_rechazados = []
 
-            # ── Cargar listas y campañas ──────────────────────────────────────
+            # ── Cargar campañas ───────────────────────────────────────────────
+            if not st.session_state.t4_campanas:
+                with st.spinner("Cargando campañas de Lemlist…"):
+                    try:
+                        st.session_state.t4_campanas = _lm4.get_campaigns()
+                    except Exception as _e4c:
+                        st.error(f"Error cargando campañas: {_e4c}")
+            _camps4       = st.session_state.t4_campanas
+            _camp_nombres4 = [c.get("name","") for c in _camps4]
+
             _col_l1, _col_l2 = st.columns([1, 1])
             with _col_l1:
-                if not st.session_state.t4_listas:
-                    with st.spinner("Cargando listas de Lemlist…"):
-                        try:
-                            st.session_state.t4_listas = _lm4.get_contact_lists()
-                        except Exception as _e4l:
-                            st.error(f"Error cargando listas: {_e4l}")
-                _listas4 = st.session_state.t4_listas
-                _lista_nombres4 = [l.get("name","") for l in _listas4]
-                _sel_lista4 = st.selectbox(
-                    "📋 Lista de Lemlist con contactos de Sales Nav:",
-                    options=_lista_nombres4,
-                    key="t4_sel_lista",
-                    help="Lista donde pusheaste los contactos desde Sales Navigator"
+                _sel_origen4 = st.selectbox(
+                    "📥 Campaña origen (contactos desde Sales Nav):",
+                    options=_camp_nombres4,
+                    key="t4_sel_origen",
+                    help="Campaña staging donde pusheaste los contactos con el plugin de Lemlist"
                 )
-
             with _col_l2:
-                if not st.session_state.t4_campanas:
-                    with st.spinner("Cargando campañas de Lemlist…"):
-                        try:
-                            st.session_state.t4_campanas = _lm4.get_campaigns()
-                        except Exception as _e4c:
-                            st.error(f"Error cargando campañas: {_e4c}")
-                _camps4 = st.session_state.t4_campanas
-                _camp_nombres4 = [c.get("name","") for c in _camps4]
                 _sel_camp4 = st.selectbox(
                     "🎯 Campaña destino (para enriquecimiento):",
                     options=_camp_nombres4,
@@ -3396,26 +3397,24 @@ with tab4:
             _c4a, _c4b, _c4c = st.columns([2, 2, 1])
             _btn_filtrar4 = _c4a.button("🤖 Filtrar por Buyer Persona y agregar a campaña",
                                          type="primary", use_container_width=True, key="btn_filtrar_bp")
-            _btn_refresh4 = _c4c.button("↺ Actualizar listas", key="btn_refresh_t4",
-                                         use_container_width=True)
+            _btn_refresh4 = _c4c.button("↺ Actualizar", key="btn_refresh_t4", use_container_width=True)
             if _btn_refresh4:
-                st.session_state.t4_listas   = []
-                st.session_state.t4_campanas = []
-                st.session_state.t4_filtrados  = []
+                st.session_state.t4_campanas  = []
+                st.session_state.t4_filtrados = []
                 st.rerun()
 
-            if _btn_filtrar4 and _sel_lista4 and _sel_camp4:
-                _lista_obj4 = next((l for l in _listas4 if l.get("name","") == _sel_lista4), None)
-                _camp_obj4  = next((c for c in _camps4  if c.get("name","") == _sel_camp4),  None)
-                if _lista_obj4 and _camp_obj4:
-                    _lid4  = _lista_obj4.get("_id") or _lista_obj4.get("id","")
-                    _cid4  = _camp_obj4.get("_id")  or _camp_obj4.get("id","")
+            if _btn_filtrar4 and _sel_origen4 and _sel_camp4:
+                _origen_obj4 = next((c for c in _camps4 if c.get("name","") == _sel_origen4), None)
+                _camp_obj4   = next((c for c in _camps4 if c.get("name","") == _sel_camp4),  None)
+                if _origen_obj4 and _camp_obj4:
+                    _oid4  = _origen_obj4.get("_id") or _origen_obj4.get("id","")
+                    _cid4  = _camp_obj4.get("_id")   or _camp_obj4.get("id","")
                     _bp4   = st.session_state.buyer_persona or {}
 
-                    # Paso A: Cargar contactos de la lista
-                    with st.spinner(f"Cargando contactos de la lista «{_sel_lista4}»…"):
+                    # Paso A: Cargar contactos de la campaña origen
+                    with st.spinner(f"Cargando contactos de la campaña «{_sel_origen4}»…"):
                         try:
-                            _raw4 = _lm4.get_contact_list_leads(_lid4, limit=1000)
+                            _raw4 = _lm4.get_campaign_contacts(_oid4, limit=1000)
                             # Normalizar
                             _norm4 = []
                             for _lc in _raw4:
@@ -3440,9 +3439,9 @@ with tab4:
                                     "email"       : _em4,
                                     "linkedin_url": _li4,
                                 })
-                            st.write(f"✅ {len(_norm4)} contactos cargados de la lista")
+                            st.write(f"✅ {len(_norm4)} contactos cargados de la campaña")
                         except Exception as _e4r:
-                            st.error(f"❌ Error cargando lista: {_e4r}")
+                            st.error(f"❌ Error cargando campaña: {_e4r}")
                             _norm4 = []
 
                     if _norm4:
