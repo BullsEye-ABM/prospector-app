@@ -495,12 +495,13 @@ def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
     roles        = buyer_persona.get("roles_compra", {})
     correcciones = buyer_persona.get("correcciones_ia", [])
 
+    # Usar índice numérico — Claude no lo puede corromper como un ID largo
     _contactos_txt = _json.dumps([{
-        "id"      : c.get("lead_id") or c.get("email",""),
+        "idx"     : i,
         "nombre"  : c.get("full_name",""),
         "cargo"   : c.get("job_title",""),
         "empresa" : c.get("company_name",""),
-    } for c in contactos], ensure_ascii=False, indent=2)
+    } for i, c in enumerate(contactos)], ensure_ascii=False, indent=2)
 
     # Incluir correcciones previas del usuario como ejemplos de aprendizaje
     _correcciones_txt = ""
@@ -529,7 +530,8 @@ def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
         "- Usa las correcciones anteriores del usuario como guía para casos similares\n\n"
         "Sé estricto pero considera el contexto: un 'Owner' de empresa dental es válido "
         "aunque el nombre de la empresa no mencione 'dental'.\n\n"
-        'Devuelve SOLO un JSON: [{"id": "...", "aprobado": true/false, "razon": "..."}, ...]\n'
+        'Devuelve SOLO un JSON con TODOS los contactos: [{"idx": 0, "aprobado": true/false, "razon": "..."}, ...]\n'
+        "El campo idx debe ser exactamente el número de la lista. "
         "No agregues texto antes ni después del JSON."
     )
 
@@ -543,13 +545,13 @@ def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
             raw = re.sub(r"^```[a-z]*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
         decisiones = _json.loads(raw)
-        dec_map = {str(d.get("id","")): d for d in decisiones}
+        # Mapear por índice numérico — 100% fiable
+        dec_map = {int(d.get("idx", -1)): d for d in decisiones if "idx" in d}
 
         aprobados = []
-        for c in contactos:
-            cid = str(c.get("lead_id") or c.get("email",""))
-            dec = dec_map.get(cid, {})
-            c["razon_bp"] = dec.get("razon", "")   # guardar razón en TODOS (aprobados y rechazados)
+        for i, c in enumerate(contactos):
+            dec = dec_map.get(i, {})
+            c["razon_bp"] = dec.get("razon", "Sin razón registrada")
             if dec.get("aprobado", False):
                 aprobados.append(c)
         return aprobados
