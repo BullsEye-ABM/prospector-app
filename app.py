@@ -549,8 +549,8 @@ def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
         for c in contactos:
             cid = str(c.get("lead_id") or c.get("email",""))
             dec = dec_map.get(cid, {})
+            c["razon_bp"] = dec.get("razon", "")   # guardar razón en TODOS (aprobados y rechazados)
             if dec.get("aprobado", False):
-                c["razon_bp"] = dec.get("razon", "")
                 aprobados.append(c)
         return aprobados
     except Exception as ex:
@@ -3367,12 +3367,15 @@ with tab4:
         # ── Paso 2: Filtrar contactos por Buyer Persona y agregar a campaña ──
         st.markdown("#### 🤖 Paso 2 · Filtrar contactos por Buyer Persona")
         st.info(
-            "**Flujo:**\n"
+            "**Flujo:**\n\n"
             "1. 🔌 Usa el plugin de Lemlist para pushear contactos desde Sales Navigator "
-            "a una **campaña de staging** (ej: «Por revisar - App»)\n"
+            "a la campaña **«Pusheo Sales Navigator IA»** y marca la opción de enriquecer "
+            "solo el perfil de LinkedIn (1 crédito)\n"
             "2. ⏳ Espera que Lemlist enriquezca los cargos (unos minutos)\n"
             "3. 🤖 Selecciona esa campaña abajo → la app filtra quiénes coinciden con el "
-            "Buyer Persona → los agrega automáticamente a la campaña de enriquecimiento"
+            "Buyer Persona → los agrega automáticamente a la campaña de enriquecimiento\n"
+            "4. 👀 Revisa los contactos rechazados — si alguno debería pasar, apruébalo manualmente "
+            "con un clic y la IA aprenderá para la próxima vez"
         )
 
         _lm4 = LemlistClient(lemlist_key()) if lemlist_key() else None
@@ -3465,8 +3468,8 @@ with tab4:
                         # Paso B: Filtrar con IA por Buyer Persona
                         with st.spinner(f"🤖 Claude filtrando {len(_norm4)} contactos por Buyer Persona…"):
                             _aprobados4 = filtrar_contactos_bp_ia(_norm4, _bp4)
-                            _rechazados4 = [c for c in _norm4
-                                            if not any(a["lead_id"] == c["lead_id"] for a in _aprobados4)]
+                            _aprobados_ids = {a.get("lead_id") for a in _aprobados4}
+                            _rechazados4 = [c for c in _norm4 if c.get("lead_id") not in _aprobados_ids]
                             st.session_state.t4_filtrados  = _aprobados4
                             st.session_state.t4_rechazados = _rechazados4
 
@@ -3589,18 +3592,13 @@ with tab5:
     elif not LUSHA_API_KEY:
         st.error("⚠️ Falta LUSHA_API_KEY en Streamlit Secrets.")
     else:
-        # ── Recordatorio del flujo ─────────────────────────────────────────
-        with st.expander("ℹ️ ¿Cómo funciona este flujo?", expanded=False):
-            st.markdown(
-                "**Antes de usar esta sección, asegúrate de haber completado:**\n\n"
-                "1. ✅ Importaste los leads a Lemlist con el plugin desde Sales Navigator "
-                "(lista «Contactos App Prospección (Por enriquecer)»)\n"
-                "2. ✅ Filtraste los perfiles fit y los moviste a la lista "
-                "**«Contactos Validados para enriquecer»**\n"
-                "3. ✅ En Lemlist, seleccionaste todos los contactos de esa lista y activaste "
-                "el enrichment manual (email + teléfono) con la waterfall de Lemlist\n\n"
-                "**Lusha completa solo lo que Lemlist no encontró (teléfonos faltantes).**"
-            )
+        st.info(
+            "Selecciona la campaña **«Contactos para enriquecer con Lusha»** con los contactos "
+            "ya enriquecidos por Lemlist (email + teléfono). Lusha buscará los teléfonos que "
+            "Lemlist no logró encontrar.\n\n"
+            "⚠️ Una vez descargado el Excel, estos contactos **no se volverán a procesar** "
+            "en futuras sesiones — la app los recuerda automáticamente."
+        )
 
         st.divider()
 
@@ -3611,15 +3609,6 @@ with tab5:
         _NOMBRE_LISTA_VALIDADOS = "Contactos Validados para enriquecer"
 
 
-        # Nota: La API de Lemlist NO permite listar contactos por lista (/contacts siempre
-        # requiere idsOrEmails). Solo las CAMPAÑAS exponen sus leads por API.
-        st.info(
-            "ℹ️ **Nota técnica de Lemlist:** La API de Lemlist solo permite leer contactos "
-            "de **campañas** (secuencias), no de listas de contactos.\n\n"
-            "**Solución rápida:** En Lemlist, agrega los contactos de tu lista a una campaña "
-            "(puede ser una campaña \"dummy\" solo para este fin) → selecciónala abajo.",
-            icon="💡"
-        )
 
         # Almacenar contactos cargados en session_state para persistencia
         if "enrich_contacts_loaded" not in st.session_state:
@@ -3645,10 +3634,10 @@ with tab5:
             col_lista, col_btn_lista, col_refresh = st.columns([3, 1, 1])
             with col_lista:
                 _sel_camp_name = st.selectbox(
-                    "Selecciona la campaña en Lemlist:",
+                    "Selecciona la campaña «Contactos para enriquecer con Lusha»:",
                     options=_camp_names5,
                     key="enrich_lista_nombre",
-                    help="Selecciona la campaña que contiene los contactos a enriquecer con Lusha",
+                    help="Contactos ya enriquecidos por Lemlist. Lusha completará los teléfonos faltantes.",
                 )
             with col_btn_lista:
                 st.write("")
