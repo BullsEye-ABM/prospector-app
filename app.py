@@ -476,6 +476,74 @@ def auto_revisar_empresas_ia(empresas: list, icp: dict, buyer_persona: dict, cri
         return empresas
 
 
+def filtrar_contactos_bp_ia(contactos: list, buyer_persona: dict) -> list:
+    """
+    Usa Claude para revisar una lista de contactos de Lemlist y decidir
+    cuáles coinciden con el Buyer Persona (por cargo / rol de compra).
+    Devuelve solo los contactos que SÍ coinciden, con campo 'razon_bp'.
+    """
+    import anthropic as _anth
+    import json as _json
+
+    if not contactos or not buyer_persona:
+        return contactos
+
+    client = _anth.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    cargos_obj  = buyer_persona.get("cargos_objetivo", [])
+    cargos_excl = buyer_persona.get("cargos_excluidos", [])
+    roles       = buyer_persona.get("roles_compra", {})
+
+    _contactos_txt = _json.dumps([{
+        "id"      : c.get("lead_id") or c.get("email",""),
+        "nombre"  : c.get("full_name",""),
+        "cargo"   : c.get("job_title",""),
+        "empresa" : c.get("company_name",""),
+    } for c in contactos], ensure_ascii=False, indent=2)
+
+    prompt = (
+        "Eres un experto en prospección B2B. Revisa esta lista de contactos y determina "
+        "cuáles encajan con el Buyer Persona objetivo.\n\n"
+        f"Cargos objetivo: {', '.join(cargos_obj)}\n"
+        f"Cargos a excluir: {', '.join(cargos_excl)}\n"
+        f"Roles de compra buscados: {_json.dumps(roles, ensure_ascii=False)}\n\n"
+        f"Contactos a revisar:\n{_contactos_txt}\n\n"
+        "Criterios para aprobar:\n"
+        "- El cargo coincide (exacto o similar) con alguno de los cargos objetivo\n"
+        "- El cargo NO está en la lista de excluidos\n"
+        "- El cargo corresponde a un tomador de decisión o influenciador relevante\n\n"
+        "Sé estricto: rechaza cargos operativos, técnicos sin decisión de compra, o que no encajen.\n\n"
+        'Devuelve SOLO un JSON: [{"id": "...", "aprobado": true/false, "razon": "..."}, ...]\n'
+        "No agregues texto antes ni después del JSON."
+    )
+
+    try:
+        resp = _claude_create(client,
+            model="claude-opus-4-5",
+            max_tokens=3000,
+            messages=[{"role": "user", "content": prompt}])
+        raw = resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+        decisiones = _json.loads(raw)
+        dec_map = {str(d.get("id","")): d for d in decisiones}
+
+        aprobados = []
+        for c in contactos:
+            cid = str(c.get("lead_id") or c.get("email",""))
+            dec = dec_map.get(cid, {})
+            if dec.get("aprobado", False):
+                c["razon_bp"] = dec.get("razon", "")
+                aprobados.append(c)
+        return aprobados
+    except Exception as ex:
+        # Si falla Claude, devolver todos con advertencia
+        for c in contactos:
+            c["razon_bp"] = f"[Filtro manual necesario — error IA: {ex}]"
+        return contactos
+
+
 def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False, propuesta_de_valor=None, excluir_dominios=None, excluir_nombres=None, razones_rechazo=None, lookalike_empresas=None):
     if demo:
         return [
@@ -3268,6 +3336,163 @@ with tab4:
                 "6. 📱 Vuelve aquí a la pestaña **Enriquecimiento** para completar los teléfonos faltantes con Lusha"
             )
 
+        st.divider()
+
+        # ── Paso 2: Filtrar contactos por Buyer Persona y agregar a campaña ──
+        st.markdown("#### 🤖 Paso 2 · Filtrar contactos por Buyer Persona")
+        st.info(
+            "**Flujo:**\n"
+            "1. Pushea los contactos desde Sales Navigator a una **lista de Lemlist** (con el plugin)\n"
+            "2. Espera que Lemlist enriquezca los cargos (unos minutos)\n"
+            "3. Selecciona esa lista abajo → la app filtra automáticamente quiénes "
+            "coinciden con el Buyer Persona → los agrega a la campaña de enriquecimiento"
+        )
+
+        _lm4 = LemlistClient(lemlist_key()) if lemlist_key() else None
+
+        if not _lm4:
+            st.warning("⚠️ Configura la API Key de Lemlist en Editar Cliente para usar esta función.")
+        else:
+            # ── Inicializar session state ─────────────────────────────────────
+            if "t4_listas"       not in st.session_state: st.session_state.t4_listas       = []
+            if "t4_campanas"     not in st.session_state: st.session_state.t4_campanas     = []
+            if "t4_filtrados"    not in st.session_state: st.session_state.t4_filtrados    = []
+            if "t4_rechazados"   not in st.session_state: st.session_state.t4_rechazados   = []
+
+            # ── Cargar listas y campañas ──────────────────────────────────────
+            _col_l1, _col_l2 = st.columns([1, 1])
+            with _col_l1:
+                if not st.session_state.t4_listas:
+                    with st.spinner("Cargando listas de Lemlist…"):
+                        try:
+                            st.session_state.t4_listas = _lm4.get_contact_lists()
+                        except Exception as _e4l:
+                            st.error(f"Error cargando listas: {_e4l}")
+                _listas4 = st.session_state.t4_listas
+                _lista_nombres4 = [l.get("name","") for l in _listas4]
+                _sel_lista4 = st.selectbox(
+                    "📋 Lista de Lemlist con contactos de Sales Nav:",
+                    options=_lista_nombres4,
+                    key="t4_sel_lista",
+                    help="Lista donde pusheaste los contactos desde Sales Navigator"
+                )
+
+            with _col_l2:
+                if not st.session_state.t4_campanas:
+                    with st.spinner("Cargando campañas de Lemlist…"):
+                        try:
+                            st.session_state.t4_campanas = _lm4.get_campaigns()
+                        except Exception as _e4c:
+                            st.error(f"Error cargando campañas: {_e4c}")
+                _camps4 = st.session_state.t4_campanas
+                _camp_nombres4 = [c.get("name","") for c in _camps4]
+                _sel_camp4 = st.selectbox(
+                    "🎯 Campaña destino (para enriquecimiento):",
+                    options=_camp_nombres4,
+                    key="t4_sel_camp",
+                    help="Campaña donde se agregarán los contactos que pasen el filtro de Buyer Persona"
+                )
+
+            _c4a, _c4b, _c4c = st.columns([2, 2, 1])
+            _btn_filtrar4 = _c4a.button("🤖 Filtrar por Buyer Persona y agregar a campaña",
+                                         type="primary", use_container_width=True, key="btn_filtrar_bp")
+            _btn_refresh4 = _c4c.button("↺ Actualizar listas", key="btn_refresh_t4",
+                                         use_container_width=True)
+            if _btn_refresh4:
+                st.session_state.t4_listas   = []
+                st.session_state.t4_campanas = []
+                st.session_state.t4_filtrados  = []
+                st.rerun()
+
+            if _btn_filtrar4 and _sel_lista4 and _sel_camp4:
+                _lista_obj4 = next((l for l in _listas4 if l.get("name","") == _sel_lista4), None)
+                _camp_obj4  = next((c for c in _camps4  if c.get("name","") == _sel_camp4),  None)
+                if _lista_obj4 and _camp_obj4:
+                    _lid4  = _lista_obj4.get("_id") or _lista_obj4.get("id","")
+                    _cid4  = _camp_obj4.get("_id")  or _camp_obj4.get("id","")
+                    _bp4   = st.session_state.buyer_persona or {}
+
+                    # Paso A: Cargar contactos de la lista
+                    with st.spinner(f"Cargando contactos de la lista «{_sel_lista4}»…"):
+                        try:
+                            _raw4 = _lm4.get_contact_list_leads(_lid4, limit=1000)
+                            # Normalizar
+                            _norm4 = []
+                            for _lc in _raw4:
+                                _fc = _lc.get("fields") or {}
+                                _fn4 = _fc.get("firstName") or _lc.get("firstName") or ""
+                                _ln4 = _fc.get("lastName")  or _lc.get("lastName")  or ""
+                                _jt4 = (_fc.get("jobTitle") or _fc.get("job_title") or
+                                        _lc.get("jobTitle") or _lc.get("job_title") or "")
+                                _co4 = (_fc.get("companyName") or _fc.get("company") or
+                                        _lc.get("companyName") or _lc.get("company") or "")
+                                _em4 = _lc.get("email") or _fc.get("email") or ""
+                                _li4 = (_lc.get("linkedinUrlSalesNav") or _lc.get("linkedinUrl") or
+                                        _fc.get("linkedinUrl") or "")
+                                _id4 = _lc.get("_id") or _lc.get("id") or _em4
+                                _norm4.append({
+                                    "lead_id"     : _id4,
+                                    "full_name"   : f"{_fn4} {_ln4}".strip(),
+                                    "first_name"  : _fn4,
+                                    "last_name"   : _ln4,
+                                    "job_title"   : _jt4,
+                                    "company_name": _co4,
+                                    "email"       : _em4,
+                                    "linkedin_url": _li4,
+                                })
+                            st.write(f"✅ {len(_norm4)} contactos cargados de la lista")
+                        except Exception as _e4r:
+                            st.error(f"❌ Error cargando lista: {_e4r}")
+                            _norm4 = []
+
+                    if _norm4:
+                        # Paso B: Filtrar con IA por Buyer Persona
+                        with st.spinner(f"🤖 Claude filtrando {len(_norm4)} contactos por Buyer Persona…"):
+                            _aprobados4 = filtrar_contactos_bp_ia(_norm4, _bp4)
+                            _rechazados4 = [c for c in _norm4
+                                            if not any(a["lead_id"] == c["lead_id"] for a in _aprobados4)]
+                            st.session_state.t4_filtrados  = _aprobados4
+                            st.session_state.t4_rechazados = _rechazados4
+
+                        st.success(
+                            f"🤖 Filtro completado: **{len(_aprobados4)} aprobados** "
+                            f"({len(_rechazados4)} rechazados) de {len(_norm4)} contactos"
+                        )
+
+                        # Paso C: Agregar aprobados a la campaña destino
+                        if _aprobados4:
+                            _errores4 = []
+                            with st.spinner(f"Agregando {len(_aprobados4)} contactos a la campaña «{_sel_camp4}»…"):
+                                _prog4 = st.progress(0)
+                                for _pi4, _ct4 in enumerate(_aprobados4):
+                                    try:
+                                        _lm4.add_lead(_cid4, _ct4)
+                                    except Exception as _ea4:
+                                        _errores4.append(f"{_ct4.get('full_name','?')}: {_ea4}")
+                                    _prog4.progress((_pi4 + 1) / len(_aprobados4))
+                            if _errores4:
+                                st.warning(f"⚠️ {len(_errores4)} contactos no se pudieron agregar "
+                                           f"(probablemente ya estaban en la campaña).")
+                            else:
+                                st.success(f"✅ {len(_aprobados4)} contactos agregados a «{_sel_camp4}»")
+                            st.info(
+                                "**Próximo paso:** En Lemlist, activa el enrichment de email y "
+                                "teléfono para los contactos nuevos de la campaña. "
+                                "Luego ve a la pestaña **Enriquecimiento** para completar con Lusha."
+                            )
+
+            # Mostrar resumen si ya se filtró
+            if st.session_state.t4_filtrados:
+                with st.expander(f"✅ {len(st.session_state.t4_filtrados)} contactos aprobados (último filtro)", expanded=False):
+                    for _cf in st.session_state.t4_filtrados:
+                        st.markdown(f"- **{_cf.get('full_name','')}** — {_cf.get('job_title','')} @ "
+                                    f"{_cf.get('company_name','')} "
+                                    f"_{_cf.get('razon_bp','')}_")
+            if st.session_state.t4_rechazados:
+                with st.expander(f"❌ {len(st.session_state.t4_rechazados)} contactos rechazados (no coinciden con BP)", expanded=False):
+                    for _cr in st.session_state.t4_rechazados:
+                        st.markdown(f"- {_cr.get('full_name','')} — {_cr.get('job_title','')}")
+
 
 # ── TAB 5 · ENRIQUECIMIENTO ───────────────────────────────────────────────────
 with tab5:
@@ -3364,8 +3589,31 @@ with tab5:
                     with st.spinner(f"Cargando contactos de «{_sel_camp_name}»…"):
                         try:
                             _camp_id_5 = _match5.get("_id") or _match5.get("id","")
+                            # Obtener IDs ya procesados de Supabase para este cliente
+                            _ya_procesados = set()
+                            if st.session_state.selected_client:
+                                _proc_raw = st.session_state.selected_client.get("processed_contacts") or []
+                                if isinstance(_proc_raw, str):
+                                    try: _proc_raw = __import__("json").loads(_proc_raw)
+                                    except: _proc_raw = []
+                                _ya_procesados = set(_proc_raw)
                             # get_campaign_contacts = leads → contactIds → detalles completos
                             _leads_raw = _lm5.get_campaign_contacts(_camp_id_5, limit=1000)
+                            _total_camp = len(_leads_raw)
+                            # Filtrar solo contactos NUEVOS (no procesados antes)
+                            _leads_nuevos = []
+                            _leads_omitidos = 0
+                            for _lr in _leads_raw:
+                                _lr_id = (_lr.get("_id") or _lr.get("_leadId") or
+                                          _lr.get("id") or _lr.get("email",""))
+                                if _lr_id and _lr_id in _ya_procesados:
+                                    _leads_omitidos += 1
+                                else:
+                                    _leads_nuevos.append(_lr)
+                            _leads_raw = _leads_nuevos
+                            if _leads_omitidos > 0:
+                                st.info(f"⏭️ Se omitieron **{_leads_omitidos} contactos** ya procesados anteriormente. "
+                                        f"Cargando **{len(_leads_raw)} nuevos** de {_total_camp} totales en la campaña.")
                             _contacts_norm = []
                             for lead in _leads_raw:
                                 # Lemlist devuelve datos en lead["fields"] (nivel anidado)
@@ -3682,12 +3930,34 @@ with tab5:
                             _db_hs = get_db()
                             if _db_hs and st.session_state.selected_client_id:
                                 try:
+                                    # Guardar historial de exportación
                                     _db_hs.update_client(
                                         st.session_state.selected_client_id,
                                         {"export_history": _cur_hist}
                                     )
                                     if st.session_state.selected_client:
                                         st.session_state.selected_client["export_history"] = _cur_hist
+                                except Exception:
+                                    pass
+
+                                # Guardar IDs de contactos procesados para no repetirlos
+                                try:
+                                    _ids_nuevos = [
+                                        c.get("lead_id") or c.get("email","")
+                                        for c in _contacts5
+                                        if c.get("lead_id") or c.get("email","")
+                                    ]
+                                    _ids_prev = list(
+                                        (st.session_state.selected_client or {}).get("processed_contacts") or []
+                                    )
+                                    _ids_merged = list(set(_ids_prev + _ids_nuevos))
+                                    _db_hs.update_client(
+                                        st.session_state.selected_client_id,
+                                        {"processed_contacts": _ids_merged}
+                                    )
+                                    if st.session_state.selected_client:
+                                        st.session_state.selected_client["processed_contacts"] = _ids_merged
+                                    st.session_state.processed_contacts = _ids_merged
                                 except Exception:
                                     pass
                             st.rerun()
