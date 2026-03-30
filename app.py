@@ -377,6 +377,11 @@ def select_client(client: dict):
     # Resetear selector de cargos del Buyer Persona al cambiar de cliente
     if "bp_cargos_sel" in st.session_state:
         del st.session_state["bp_cargos_sel"]
+    # Resetear selección temporal de ICP al cambiar cliente
+    st.session_state.ind_seleccionadas_icp  = list(_parse_json_field(client.get("icp")) or {}).copy() \
+        if False else list((_parse_json_field(client.get("icp")) or {}).get("industrias", []))
+    st.session_state.custom_industrias_icp  = []
+    st.session_state.custom_senales_icp     = []
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LÓGICA DE NEGOCIO  (igual que antes, sin cambios)
@@ -2553,38 +2558,63 @@ with tab1:
                 "Gobierno / Sector público",
             ]
             _ind_guardadas = saved_icp.get("industrias", ["SaaS B2B","Fintech"])
-            # Custom industries stored in session state (persist during session)
+            # Inicializar estado de selección (se resetea al cambiar cliente via select_client)
             if "custom_industrias_icp" not in st.session_state:
                 st.session_state.custom_industrias_icp = []
-            # Load saved custom industries (those not in standard list)
+            if "ind_seleccionadas_icp" not in st.session_state:
+                st.session_state.ind_seleccionadas_icp = list(_ind_guardadas)
+            # Cargar industrias custom guardadas en Supabase (que no están en el catálogo)
             for _ci in _ind_guardadas:
                 if _ci not in _ind_opciones and _ci not in st.session_state.custom_industrias_icp:
                     st.session_state.custom_industrias_icp.append(_ci)
-            _opciones_final = _ind_opciones + [i for i in st.session_state.custom_industrias_icp if i not in _ind_opciones]
-            industrias = st.multiselect("Industrias objetivo",
-                _opciones_final,
-                default=[i for i in _ind_guardadas if i in _opciones_final])
+            _opciones_final = _ind_opciones + [
+                i for i in st.session_state.custom_industrias_icp if i not in _ind_opciones
+            ]
+            # Buscador de industrias (filtra la lista del multiselect)
+            _ind_buscador = st.text_input(
+                "Buscar industria",
+                key="ind_buscador_icp",
+                placeholder="🔍 Escribe para filtrar industrias disponibles…",
+                label_visibility="collapsed",
+            )
+            _opciones_vis = [
+                i for i in _opciones_final
+                if not _ind_buscador or _ind_buscador.lower() in i.lower()
+            ]
+            # Siempre incluir las ya seleccionadas para que no desaparezcan al filtrar
+            _sel_actual = [i for i in st.session_state.ind_seleccionadas_icp if i in _opciones_final]
+            for _s in _sel_actual:
+                if _s not in _opciones_vis:
+                    _opciones_vis = [_s] + _opciones_vis
+            industrias = st.multiselect(
+                "Industrias objetivo",
+                _opciones_vis,
+                default=[i for i in _sel_actual if i in _opciones_vis],
+                key="multisel_industrias_icp",
+            )
+            # Guardar selección en session_state para persistir entre reruns
+            st.session_state.ind_seleccionadas_icp = industrias
+
+            # Agregar industria personalizada
             with st.form("form_agregar_industria", clear_on_submit=True):
                 _col_ind1, _col_ind2 = st.columns([4, 1])
                 with _col_ind1:
-                    ind_custom = st.text_input("¿Otra industria? Escríbela aquí",
+                    ind_custom = st.text_input(
+                        "Agregar otra industria",
                         placeholder="Ej: Banca privada, Cleantech… (Enter para agregar)",
-                        label_visibility="visible")
+                        label_visibility="collapsed",
+                    )
                 with _col_ind2:
-                    st.write("")
-                    st.write("")
-                    _add_ind = st.form_submit_button("➕ Agregar")
+                    _add_ind = st.form_submit_button("➕ Agregar", use_container_width=True)
                 if _add_ind and ind_custom.strip():
                     _new_ind = ind_custom.strip()
                     if _new_ind not in st.session_state.custom_industrias_icp:
                         st.session_state.custom_industrias_icp.append(_new_ind)
-                    if _new_ind not in industrias:
-                        industrias = industrias + [_new_ind]
+                    if _new_ind not in st.session_state.ind_seleccionadas_icp:
+                        st.session_state.ind_seleccionadas_icp = list(
+                            st.session_state.ind_seleccionadas_icp
+                        ) + [_new_ind]
                     st.rerun()
-            # Include custom industries in final selection
-            for _ci in st.session_state.custom_industrias_icp:
-                if _ci not in industrias and _ci in _ind_guardadas:
-                    industrias = industrias + [_ci]
             _paises_mundo = [
                 "México","Colombia","Argentina","Chile","Perú","Brasil","Uruguay",
                 "Ecuador","Costa Rica","Bolivia","Paraguay","Venezuela","Panamá",
@@ -2661,7 +2691,7 @@ with tab1:
                 ["B2B","B2B y B2C","Marketplace B2B"], horizontal=True,
                 index=["B2B","B2B y B2C","Marketplace B2B"].index(saved_icp.get("modelo_negocio","B2B")))
         with col_b:
-            _SENALES_CATALOGO = [
+            _SENALES_CATALOGO_BASE = [
                 "Tiene equipo de ventas","Tiene equipo de marketing","Usa CRM",
                 "Usa herramientas de sales engagement","Tiene SDRs o BDRs",
                 "Está contratando vendedores","Está contratando roles de revenue",
@@ -2678,24 +2708,103 @@ with tab1:
                 "Tiene API pública o integraciones","Stack tecnológico moderno (SaaS-first)",
             ]
 
-            # Leer default guardado
-            _senales_default = saved_icp.get(
+            # Señales personalizadas en session_state
+            if "custom_senales_icp" not in st.session_state:
+                st.session_state.custom_senales_icp = []
+            _senales_default_raw = saved_icp.get(
                 "senales_fit",
                 ["Tiene equipo de ventas","Usa CRM","Está contratando vendedores"]
             )
+            # Cargar señales custom guardadas (no están en el catálogo base)
+            for _cs in _senales_default_raw:
+                if _cs not in _SENALES_CATALOGO_BASE and _cs not in st.session_state.custom_senales_icp:
+                    st.session_state.custom_senales_icp.append(_cs)
+            _SENALES_CATALOGO = _SENALES_CATALOGO_BASE + [
+                s for s in st.session_state.custom_senales_icp if s not in _SENALES_CATALOGO_BASE
+            ]
 
-            # ── Pills interactivos: todos los ítems visibles, clic para activar/desactivar ──
+            # ── Botón IA para sugerir señales personalizadas ──
+            _col_s1, _col_s2 = st.columns([3, 2])
+            with _col_s1:
+                st.markdown("**Señales de fit**")
+            with _col_s2:
+                _btn_sugerir_senales = st.button(
+                    "🤖 Sugerir con IA",
+                    key="btn_sugerir_senales",
+                    help="Claude analiza tu ICP y propuesta de valor para sugerir señales de fit relevantes",
+                    use_container_width=True,
+                )
+            if _btn_sugerir_senales:
+                _pv_ctx = st.session_state.propuesta_de_valor or {}
+                _icp_ctx = {"industrias": industrias, "modelo_negocio": saved_icp.get("modelo_negocio","B2B")}
+                _prompt_senales = (
+                    "Eres un experto en ventas B2B. Analiza este contexto y sugiere señales de fit "
+                    "específicas y relevantes para identificar a las empresas ideales.\n\n"
+                    f"Propuesta de valor: {_pv_ctx.get('propuesta','')}\n"
+                    f"Dolores que resuelve: {_pv_ctx.get('dolores','')}\n"
+                    f"Industrias objetivo: {', '.join(industrias or [])}\n\n"
+                    "Devuelve SOLO un JSON array con 6-10 señales de fit específicas para este contexto. "
+                    "Pueden ser señales comportamentales, tecnológicas, de crecimiento o de necesidad. "
+                    "Formato: [\"Señal 1\", \"Señal 2\", ...]\n"
+                    "Las señales deben ser concretas y observables, no genéricas."
+                )
+                try:
+                    import anthropic as _anth_sg, json as _json_sg
+                    _cl_s = _anth_sg.Anthropic(api_key=ANTHROPIC_API_KEY)
+                    _resp_s = _cl_s.messages.create(
+                        model="claude-opus-4-6",
+                        max_tokens=600,
+                        messages=[{"role":"user","content":_prompt_senales}],
+                    )
+                    _raw_s = _resp_s.content[0].text.strip()
+                    _raw_s = re.sub(r"^```[a-z]*\n?","", _raw_s)
+                    _raw_s = re.sub(r"\n?```$","", _raw_s).strip()
+                    _sugeridas = _json_sg.loads(_raw_s)
+                    if isinstance(_sugeridas, list):
+                        for _sg in _sugeridas:
+                            if isinstance(_sg, str) and _sg.strip():
+                                _sg = _sg.strip()
+                                if _sg not in _SENALES_CATALOGO_BASE and _sg not in st.session_state.custom_senales_icp:
+                                    st.session_state.custom_senales_icp.append(_sg)
+                        st.success(f"✅ {len(_sugeridas)} señales sugeridas añadidas al catálogo")
+                        st.rerun()
+                except Exception as _e_sg:
+                    st.warning(f"No se pudieron generar señales: {_e_sg}")
+
+            # Pills interactivos
+            _SENALES_CATALOGO_FINAL = _SENALES_CATALOGO_BASE + [
+                s for s in st.session_state.custom_senales_icp if s not in _SENALES_CATALOGO_BASE
+            ]
             _senales_result = st.pills(
                 "Señales de fit — activa o desactiva haciendo clic",
-                options=_SENALES_CATALOGO,
-                default=_senales_default,
+                options=_SENALES_CATALOGO_FINAL,
+                default=[s for s in _senales_default_raw if s in _SENALES_CATALOGO_FINAL],
                 selection_mode="multi",
                 key="icp_senales_pills",
+                label_visibility="collapsed",
             )
-            senales = list(_senales_result) if _senales_result is not None else list(_senales_default)
+            senales = list(_senales_result) if _senales_result is not None else list(_senales_default_raw)
+
+            # Agregar señal personalizada manualmente
+            with st.form("form_agregar_senal", clear_on_submit=True):
+                _col_sg1, _col_sg2 = st.columns([4, 1])
+                with _col_sg1:
+                    _senal_custom = st.text_input(
+                        "Agregar señal de fit",
+                        placeholder="Ej: Usa SAP, Tiene tienda e-commerce, Exporta a LATAM…",
+                        label_visibility="collapsed",
+                    )
+                with _col_sg2:
+                    _add_senal = st.form_submit_button("➕", use_container_width=True)
+                if _add_senal and _senal_custom.strip():
+                    _ns = _senal_custom.strip()
+                    if _ns not in st.session_state.custom_senales_icp:
+                        st.session_state.custom_senales_icp.append(_ns)
+                    st.rerun()
+
             excl_default = "\n".join(saved_icp.get("exclusiones",
                 ["B2C puro","Startups sin revenue","Empresas sin equipo comercial"]))
-            exclusiones = st.text_area("Exclusiones (una por línea)", value=excl_default, height=148)
+            exclusiones = st.text_area("Exclusiones (una por línea)", value=excl_default, height=100)
 
         # ── Geo ID de LinkedIn (override manual) ─────────────────────────────
         with st.expander("🌐 Geo ID de LinkedIn Sales Navigator (avanzado)", expanded=False):
