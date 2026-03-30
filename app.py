@@ -2570,27 +2570,15 @@ with tab1:
             _opciones_final = _ind_opciones + [
                 i for i in st.session_state.custom_industrias_icp if i not in _ind_opciones
             ]
-            # Buscador de industrias (filtra la lista del multiselect)
-            _ind_buscador = st.text_input(
-                "Buscar industria",
-                key="ind_buscador_icp",
-                placeholder="🔍 Escribe para filtrar industrias disponibles…",
-                label_visibility="collapsed",
-            )
-            _opciones_vis = [
-                i for i in _opciones_final
-                if not _ind_buscador or _ind_buscador.lower() in i.lower()
-            ]
-            # Siempre incluir las ya seleccionadas para que no desaparezcan al filtrar
+            # Selección actual (persistida en session_state para sobrevivir reruns)
             _sel_actual = [i for i in st.session_state.ind_seleccionadas_icp if i in _opciones_final]
-            for _s in _sel_actual:
-                if _s not in _opciones_vis:
-                    _opciones_vis = [_s] + _opciones_vis
+            # El multiselect de Streamlit ya tiene buscador nativo: haz clic y escribe para filtrar
             industrias = st.multiselect(
-                "Industrias objetivo",
-                _opciones_vis,
-                default=[i for i in _sel_actual if i in _opciones_vis],
+                "Industrias objetivo — haz clic y escribe para buscar",
+                _opciones_final,
+                default=[i for i in _sel_actual if i in _opciones_final],
                 key="multisel_industrias_icp",
+                placeholder="Selecciona o escribe para buscar…",
             )
             # Guardar selección en session_state para persistir entre reruns
             st.session_state.ind_seleccionadas_icp = industrias
