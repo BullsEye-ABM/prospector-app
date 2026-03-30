@@ -2598,10 +2598,13 @@ with tab1:
                     _new_ind = ind_custom.strip()
                     if _new_ind not in st.session_state.custom_industrias_icp:
                         st.session_state.custom_industrias_icp.append(_new_ind)
-                    if _new_ind not in st.session_state.ind_seleccionadas_icp:
-                        st.session_state.ind_seleccionadas_icp = list(
-                            st.session_state.ind_seleccionadas_icp
-                        ) + [_new_ind]
+                    _new_sel = list(st.session_state.ind_seleccionadas_icp)
+                    if _new_ind not in _new_sel:
+                        _new_sel.append(_new_ind)
+                    st.session_state.ind_seleccionadas_icp = _new_sel
+                    # Borrar clave del widget para que use el nuevo default en el rerun
+                    if "multisel_industrias_icp" in st.session_state:
+                        del st.session_state["multisel_industrias_icp"]
                     st.rerun()
             _paises_mundo = [
                 "México","Colombia","Argentina","Chile","Perú","Brasil","Uruguay",
@@ -2726,15 +2729,16 @@ with tab1:
                 _pv_ctx = st.session_state.propuesta_de_valor or {}
                 _icp_ctx = {"industrias": industrias, "modelo_negocio": saved_icp.get("modelo_negocio","B2B")}
                 _prompt_senales = (
-                    "Eres un experto en ventas B2B. Analiza este contexto y sugiere señales de fit "
-                    "específicas y relevantes para identificar a las empresas ideales.\n\n"
+                    "Eres un experto en ventas B2B. Sugiere señales de fit para identificar empresas ideales.\n\n"
                     f"Propuesta de valor: {_pv_ctx.get('propuesta','')}\n"
-                    f"Dolores que resuelve: {_pv_ctx.get('dolores','')}\n"
-                    f"Industrias objetivo: {', '.join(industrias or [])}\n\n"
-                    "Devuelve SOLO un JSON array con 6-10 señales de fit específicas para este contexto. "
-                    "Pueden ser señales comportamentales, tecnológicas, de crecimiento o de necesidad. "
-                    "Formato: [\"Señal 1\", \"Señal 2\", ...]\n"
-                    "Las señales deben ser concretas y observables, no genéricas."
+                    f"Dolores: {_pv_ctx.get('dolores','')}\n"
+                    f"Industrias: {', '.join(industrias or [])}\n\n"
+                    "Devuelve SOLO un JSON array con 8-10 señales. "
+                    "IMPORTANTE: cada señal debe ser MUY CORTA (máximo 5-6 palabras), "
+                    "concreta y observable. Ejemplos del formato correcto: "
+                    "[\"Usa CRM enterprise\", \"Tiene equipo de ventas\", \"Recibió financiamiento reciente\", "
+                    "\"Exporta a LATAM\", \"Contratando SDRs\"]. "
+                    "NO uses oraciones largas ni frases descriptivas."
                 )
                 try:
                     import anthropic as _anth_sg, json as _json_sg
@@ -2759,19 +2763,19 @@ with tab1:
                 except Exception as _e_sg:
                     st.warning(f"No se pudieron generar señales: {_e_sg}")
 
-            # Pills interactivos
+            # Multiselect para señales (muestra texto completo, permite búsqueda)
             _SENALES_CATALOGO_FINAL = _SENALES_CATALOGO_BASE + [
                 s for s in st.session_state.custom_senales_icp if s not in _SENALES_CATALOGO_BASE
             ]
-            _senales_result = st.pills(
-                "Señales de fit — activa o desactiva haciendo clic",
+            _senales_default_valid = [s for s in _senales_default_raw if s in _SENALES_CATALOGO_FINAL]
+            senales = st.multiselect(
+                "Señales de fit activas",
                 options=_SENALES_CATALOGO_FINAL,
-                default=[s for s in _senales_default_raw if s in _SENALES_CATALOGO_FINAL],
-                selection_mode="multi",
-                key="icp_senales_pills",
+                default=_senales_default_valid,
+                key="icp_senales_multi",
+                placeholder="Selecciona señales o escribe para buscar…",
                 label_visibility="collapsed",
             )
-            senales = list(_senales_result) if _senales_result is not None else list(_senales_default_raw)
 
             # Agregar señal personalizada manualmente
             with st.form("form_agregar_senal", clear_on_submit=True):
@@ -2779,7 +2783,7 @@ with tab1:
                 with _col_sg1:
                     _senal_custom = st.text_input(
                         "Agregar señal de fit",
-                        placeholder="Ej: Usa SAP, Tiene tienda e-commerce, Exporta a LATAM…",
+                        placeholder="Ej: Usa SAP, Exporta a LATAM, Tiene e-commerce…",
                         label_visibility="collapsed",
                     )
                 with _col_sg2:
@@ -2788,6 +2792,8 @@ with tab1:
                     _ns = _senal_custom.strip()
                     if _ns not in st.session_state.custom_senales_icp:
                         st.session_state.custom_senales_icp.append(_ns)
+                    if "icp_senales_multi" in st.session_state:
+                        del st.session_state["icp_senales_multi"]
                     st.rerun()
 
             excl_default = "\n".join(saved_icp.get("exclusiones",
