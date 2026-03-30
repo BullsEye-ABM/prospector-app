@@ -2534,26 +2534,57 @@ with tab1:
         col_a, col_b = st.columns(2)
         with col_a:
             _ind_opciones = [
-                "SaaS B2B","Fintech","Tecnología / Software","Servicios profesionales",
-                "E-commerce B2B","Edtech","Healthtech","Logística","HR Tech",
-                "Ciberseguridad","Inteligencia Artificial / ML","Marketing Tech",
-                "Legal Tech","Proptech / Real Estate","Insurtech","Agritech",
-                "Retail / Comercio","Manufactura","Construcción","Energía / Utilities",
-                "Telecomunicaciones","Medios / Entretenimiento","Viajes / Turismo",
-                "Alimentos y Bebidas","Automotriz","Consultoría empresarial",
+                # Finanzas
+                "Financiera","Banca","Fintech","Retail financiero","Seguros",
+                # Tech
+                "SaaS B2B","Tecnología / Software","Ciberseguridad",
+                "Inteligencia Artificial / ML","Marketing Tech","HR Tech",
+                # Industria / comercio
+                "Retail / Comercio","E-commerce B2B","Logística","Manufactura",
+                "Construcción","Automotriz","Alimentos y Bebidas","Agritech",
+                # Servicios
+                "Servicios profesionales","Servicios legales","Consultoría empresarial",
                 "Contabilidad / ERP","Publicidad / Agencias","BPO / Outsourcing",
-                "Salud / Clínicas","Educación corporativa","Gobierno / Sector público",
+                # Sectores
+                "Salud","Educación","Inmobiliaria","Utilities",
+                "Telecomunicaciones","Medios / Entretenimiento","Viajes / Turismo",
+                "Legal Tech","Proptech / Real Estate","Insurtech","Edtech","Healthtech",
+                "Energía / Utilities","Salud / Clínicas","Educación corporativa",
+                "Gobierno / Sector público",
             ]
             _ind_guardadas = saved_icp.get("industrias", ["SaaS B2B","Fintech"])
-            _opciones_final = _ind_opciones + [i for i in _ind_guardadas if i not in _ind_opciones]
+            # Custom industries stored in session state (persist during session)
+            if "custom_industrias_icp" not in st.session_state:
+                st.session_state.custom_industrias_icp = []
+            # Load saved custom industries (those not in standard list)
+            for _ci in _ind_guardadas:
+                if _ci not in _ind_opciones and _ci not in st.session_state.custom_industrias_icp:
+                    st.session_state.custom_industrias_icp.append(_ci)
+            _opciones_final = _ind_opciones + [i for i in st.session_state.custom_industrias_icp if i not in _ind_opciones]
             industrias = st.multiselect("Industrias objetivo",
                 _opciones_final,
                 default=[i for i in _ind_guardadas if i in _opciones_final])
-            ind_custom = st.text_input("¿Otra industria? Escríbela aquí",
-                placeholder="Ej: Proptech, Cleantech, Retail B2B…",
-                help="Se agregará a las industrias seleccionadas al guardar")
-            if ind_custom.strip():
-                industrias = industrias + [ind_custom.strip()]
+            with st.form("form_agregar_industria", clear_on_submit=True):
+                _col_ind1, _col_ind2 = st.columns([4, 1])
+                with _col_ind1:
+                    ind_custom = st.text_input("¿Otra industria? Escríbela aquí",
+                        placeholder="Ej: Banca privada, Cleantech… (Enter para agregar)",
+                        label_visibility="visible")
+                with _col_ind2:
+                    st.write("")
+                    st.write("")
+                    _add_ind = st.form_submit_button("➕ Agregar")
+                if _add_ind and ind_custom.strip():
+                    _new_ind = ind_custom.strip()
+                    if _new_ind not in st.session_state.custom_industrias_icp:
+                        st.session_state.custom_industrias_icp.append(_new_ind)
+                    if _new_ind not in industrias:
+                        industrias = industrias + [_new_ind]
+                    st.rerun()
+            # Include custom industries in final selection
+            for _ci in st.session_state.custom_industrias_icp:
+                if _ci not in industrias and _ci in _ind_guardadas:
+                    industrias = industrias + [_ci]
             _paises_mundo = [
                 "México","Colombia","Argentina","Chile","Perú","Brasil","Uruguay",
                 "Ecuador","Costa Rica","Bolivia","Paraguay","Venezuela","Panamá",
@@ -3513,7 +3544,15 @@ with tab4:
                                 _jt4 = (_fc.get("jobTitle") or _fc.get("job_title") or
                                         _lc.get("jobTitle") or _lc.get("job_title") or "")
                                 _co4 = (_fc.get("companyName") or _fc.get("company") or
-                                        _lc.get("companyName") or _lc.get("company") or "")
+                                        _fc.get("currentCompany") or _fc.get("organization") or
+                                        _lc.get("companyName") or _lc.get("company") or
+                                        _lc.get("currentCompany") or _lc.get("organization") or "")
+                                if not _co4:
+                                    _hl4 = _fc.get("headline") or _lc.get("headline") or ""
+                                    if " @ " in _hl4:
+                                        _co4 = _hl4.split(" @ ", 1)[1].strip()
+                                    elif " at " in _hl4.lower():
+                                        _co4 = _hl4.split(" at ", 1)[1].strip()
                                 _em4 = (_lc.get("email") or _fc.get("email") or "").lower()
                                 _li4 = (_lc.get("linkedinUrlSalesNav") or _lc.get("linkedinUrl") or
                                         _fc.get("linkedinUrl") or "")
@@ -3603,15 +3642,10 @@ with tab4:
                                     except Exception as _ea4:
                                         _errores4.append(f"{_ct4.get('full_name','?')}: {_ea4}")
                                     _prog4.progress((_pi4 + 1) / len(_aprobados4))
-                            # Verificar cuántos se agregaron realmente (Lemlist deduplicar silenciosamente)
+                            # Verificar cuántos se agregaron realmente (Lemlist deduplica silenciosamente)
                             try:
                                 _destino_post = _lm4.get_campaign_leads(_cid4, limit=1000)
-                                _destino_post_emails = {(l.get("email") or "").lower() for l in _destino_post if l.get("email")}
-                                _realmente_agregados = sum(
-                                    1 for c in _aprobados4
-                                    if (c.get("email") or "").lower() in _destino_post_emails
-                                    and (c.get("email") or "").lower() not in _destino_emails
-                                )
+                                _realmente_agregados = max(0, len(_destino_post) - len(_destino_leads))
                             except Exception:
                                 _realmente_agregados = len(_aprobados4) - len(_errores4)
                             if _errores4:
@@ -3854,9 +3888,19 @@ with tab5:
                                 _comp  = (
                                     _f.get("companyName") or _f.get("company") or _f.get("company_name") or
                                     _f.get("organization") or _f.get("organizationName") or
+                                    _f.get("currentCompany") or _f.get("currentOrganization") or
                                     lead.get("companyName") or lead.get("company") or lead.get("company_name") or
-                                    lead.get("organization") or lead.get("organizationName") or ""
+                                    lead.get("organization") or lead.get("organizationName") or
+                                    lead.get("currentCompany") or ""
                                 )
+                                # Fallback: extraer empresa del headline "Cargo @ Empresa"
+                                if not _comp:
+                                    _hl = (_f.get("headline") or lead.get("headline") or
+                                           _f.get("summary") or lead.get("summary") or "")
+                                    if " @ " in _hl:
+                                        _comp = _hl.split(" @ ", 1)[1].strip()
+                                    elif " at " in _hl.lower():
+                                        _comp = _hl.split(" at ", 1)[1].strip()
                                 _ctry  = (_f.get("country") or _f.get("location") or
                                           lead.get("country") or lead.get("location") or "")
                                 _contacts_norm.append({
