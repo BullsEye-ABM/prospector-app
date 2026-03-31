@@ -445,10 +445,11 @@ def auto_revisar_empresas_ia(empresas: list, icp: dict, buyer_persona: dict, cri
         "corresponde, si la industria es excluida, o si el patrón es similar a rechazos anteriores.\n\n"
         "Devuelve SOLO un JSON válido con esta estructura:\n"
         "[\n"
-        '  {"dominio": "empresa.com", "aprobada": true, "razon": "Encaja perfectamente: SaaS B2B en México con 100-500 empleados"},\n'
-        '  {"dominio": "otra.com",    "aprobada": false, "razon": "País no está en el ICP objetivo"},\n'
+        '  {"dominio": "empresa.com", "aprobada": true, "razon": "Encaja perfectamente: SaaS B2B en México con 100-500 empleados", "nombre_linkedin": "Nombre Corto"},\n'
+        '  {"dominio": "otra.com",    "aprobada": false, "razon": "País no está en el ICP objetivo", "nombre_linkedin": "Nombre Corto"},\n'
         "  ...\n"
         "]\n"
+        "'nombre_linkedin' es el nombre corto y limpio tal como aparece en LinkedIn (sin sufijos legales como Inc., S.A., LLC, etc.).\n"
         "No agregues texto antes ni después del JSON."
     )
 
@@ -469,8 +470,10 @@ def auto_revisar_empresas_ia(empresas: list, icp: dict, buyer_persona: dict, cri
         for e in empresas:
             dom = e.get("dominio_web","").lower()
             dec = dec_map.get(dom, {})
-            e["aprobada"]     = dec.get("aprobada", True)
-            e["razon_agente"] = dec.get("razon", "")
+            e["aprobada"]      = dec.get("aprobada", True)
+            e["razon_agente"]  = dec.get("razon", "")
+            if dec.get("nombre_linkedin"):
+                e["nombre_linkedin"] = dec["nombre_linkedin"]
             resultado.append(e)
         return resultado
     except Exception as ex:
@@ -627,7 +630,10 @@ def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False,
         + f"Genera exactamente {n} empresas REALES del mercado objetivo que cumplan todos los criterios.\n"
         "Usa la propuesta de valor y los dolores que soluciona para identificar empresas que realmente necesiten esta solución.\n"
         "Responde ÚNICAMENTE con un JSON array válido. Sin texto adicional.\n"
-        "Campos: nombre_empresa, dominio_web, industria, pais, tamano_empleados, razon_fit, linkedin_url"
+        "Campos: nombre_empresa, nombre_linkedin, dominio_web, industria, pais, tamano_empleados, razon_fit, linkedin_url\n"
+        "IMPORTANTE: 'nombre_linkedin' es el nombre corto y limpio tal como aparece en LinkedIn (sin sufijos legales "
+        "como Inc., S.A., LLC, S.A. de C.V., y Cía., Ltd., Corp., etc.). Ejemplo: si nombre_empresa es "
+        "'Midway Dental Supply & Lab Inc.', nombre_linkedin sería 'Midway Dental'."
     )
     resp = _claude_create(client,
         model="claude-sonnet-4-5", max_tokens=4096,
@@ -1066,69 +1072,6 @@ class LemlistClient:
         _enc = _ulp.quote(email, safe='')
         return self._patch(f"/leads/{_enc}", fields)
 
-# ── LinkedIn Company ID Lookup ────────────────────────────────────────────────
-def buscar_linkedin_id(nombre_empresa: str) -> dict:
-    """
-    Busca el slug e ID numérico de LinkedIn de una empresa vía DuckDuckGo.
-    Retorna dict con 'li_slug' (str) y 'li_id' (str|None).
-    """
-    import requests as _req, re as _re2
-    from urllib.parse import quote_plus as _qp
-
-    result = {"li_slug": None, "li_id": None}
-    _headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0 Safari/537.36"
-        )
-    }
-
-    # ── Paso 1: DuckDuckGo → encontrar URL de LinkedIn ────────────────────────
-    try:
-        _q = _qp(f'"{nombre_empresa}" site:linkedin.com/company')
-        _r = _req.get(
-            f"https://html.duckduckgo.com/html/?q={_q}",
-            headers=_headers,
-            timeout=8,
-        )
-        _slugs = _re2.findall(
-            r'linkedin\.com/company/([a-zA-Z0-9_\-]+)(?:/|\?|"|&|>)',
-            _r.text,
-        )
-        if _slugs:
-            result["li_slug"] = _slugs[0]
-    except Exception:
-        pass
-
-    # ── Paso 2: Página de LinkedIn → extraer ID numérico ─────────────────────
-    if result["li_slug"]:
-        try:
-            _r2 = _req.get(
-                f"https://www.linkedin.com/company/{result['li_slug']}",
-                headers=_headers,
-                timeout=8,
-                allow_redirects=True,
-            )
-            _html = _r2.text
-            # Probar varios patrones donde LinkedIn esconde el ID
-            for _pat in [
-                r'"entityUrn":"urn:li:fsd_company:(\d+)"',
-                r'urn:li:company:(\d+)',
-                r'"companyId"\s*:\s*(\d+)',
-                r'"objectUrn":"urn:li:company:(\d+)"',
-                r'data-company-id="(\d+)"',
-            ]:
-                _m = _re2.search(_pat, _html)
-                if _m:
-                    result["li_id"] = _m.group(1)
-                    break
-        except Exception:
-            pass
-
-    return result
-
-
 # ── Sales Navigator URL Generator ─────────────────────────────────────────────
 _BATCH_SIZE = 15   # máx empresas por URL de Sales Navigator
 
@@ -1231,21 +1174,11 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
         _batch = empresas_aprobadas[_company_offset : _company_offset + _BATCH_SIZE]
         _batch = [e for e in _batch if e.get("nombre_empresa")]
         if _batch:
-            _cvals = []
-            for _be in _batch:
-                _bname  = _be.get("nombre_empresa", "")
-                _bli_id = _be.get("li_id")
-                if _bli_id:
-                    # ID exacto → match perfecto
-                    _cvals.append(
-                        f"(id%3A{_bli_id}%2Ctext%3A{_snav(_bname)}%2CselectionType%3AINCLUDED)"
-                    )
-                else:
-                    # Fallback: texto (búsqueda fuzzy)
-                    _cvals.append(
-                        f"(text%3A{_snav(_bname)}%2CselectionType%3AINCLUDED)"
-                    )
-            comp_vals = "%2C".join(_cvals)
+            # Usar nombre_linkedin (nombre limpio para LinkedIn) si existe, si no el nombre original
+            comp_vals = "%2C".join(
+                f"(text%3A{_snav(e.get('nombre_linkedin') or e.get('nombre_empresa', ''))}%2CselectionType%3AINCLUDED)"
+                for e in _batch
+            )
             filter_parts.append(f"(type%3ACURRENT_COMPANY%2Cvalues%3AList({comp_vals}))")
 
     # ── 2. Geografía: GEOGRAPHY + REGION (mismo ID, ambos requeridos) ─────────
@@ -3595,57 +3528,8 @@ with tab4:
                     st.caption(f"🔑 Keywords: {_kw_preview} NOT {_ex_preview}")
                 else:
                     st.caption(f"🔑 Keywords: {_kw_preview}")
-            # ── Verificar IDs de LinkedIn ──────────────────────────────────
-            _sin_id = [e for e in _aprobadas if not e.get("li_id")]
-            _con_id = [e for e in _aprobadas if e.get("li_id")]
-            if _sin_id:
-                _id_col1, _id_col2 = st.columns([3, 1])
-                with _id_col1:
-                    st.caption(
-                        f"🔍 {len(_con_id)}/{len(_aprobadas)} empresas con ID de LinkedIn verificado. "
-                        f"Con ID exacto, Sales Navigator filtra con 100% precisión."
-                    )
-                with _id_col2:
-                    if st.button("🔍 Verificar en LinkedIn", key="btn_buscar_li_ids",
-                                 help="Busca el ID exacto de cada empresa en LinkedIn para mejorar precisión"):
-                        _db_ids = get_db()
-                        _empresas_mod = [e.copy() for e in st.session_state.empresas]
-                        _n_encontrados = 0
-                        _prog = st.progress(0, text="Buscando IDs de LinkedIn…")
-                        for _idx_li, _emp_li in enumerate(_empresas_mod):
-                            if not _emp_li.get("li_id") and _emp_li.get("nombre_empresa"):
-                                _prog.progress(
-                                    (_idx_li + 1) / len(_empresas_mod),
-                                    text=f"Buscando «{_emp_li['nombre_empresa']}»…",
-                                )
-                                _found = buscar_linkedin_id(_emp_li["nombre_empresa"])
-                                if _found.get("li_slug"):
-                                    _emp_li["li_slug"] = _found["li_slug"]
-                                if _found.get("li_id"):
-                                    _emp_li["li_id"] = _found["li_id"]
-                                    _n_encontrados += 1
-                        _prog.empty()
-                        # Guardar en sesión y Supabase
-                        st.session_state.empresas = _empresas_mod
-                        st.session_state.empresas_aprobadas = [
-                            e for e in _empresas_mod if e.get("aprobada", True)
-                        ]
-                        if _db_ids and st.session_state.selected_client_id:
-                            try:
-                                _db_ids.update_client(
-                                    st.session_state.selected_client_id,
-                                    {"empresas_activas": _empresas_mod},
-                                )
-                            except Exception:
-                                pass
-                        st.success(f"✅ {_n_encontrados}/{len(_sin_id)} IDs de LinkedIn encontrados. La URL ahora usa IDs exactos.")
-                        st.rerun()
-            else:
-                st.caption(f"✅ Todas las empresas tienen ID de LinkedIn verificado — filtro exacto activo.")
-
             n_emp_url = len(_aprobadas)
-            _li_id_pct = int(100 * len(_con_id) / max(len(_aprobadas), 1))
-            st.caption(f"🏢 Empresas ({n_emp_url}): {', '.join([e.get('nombre_empresa','') for e in _aprobadas[:4]])}{'…' if n_emp_url>4 else ''} · 🆔 {_li_id_pct}% con ID LinkedIn")
+            st.caption(f"🏢 Empresas ({n_emp_url}): {', '.join([e.get('nombre_linkedin') or e.get('nombre_empresa','') for e in _aprobadas[:4]])}{'…' if n_emp_url>4 else ''}")
             # Mostrar países que se incluyen en el filtro de geografía
             _icp_paises_url = (icp_ or {}).get("geografias", [])
             if isinstance(_icp_paises_url, list) and _icp_paises_url:
