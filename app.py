@@ -378,10 +378,15 @@ def select_client(client: dict):
     if "bp_cargos_sel" in st.session_state:
         del st.session_state["bp_cargos_sel"]
     # Resetear selección temporal de ICP al cambiar cliente
-    st.session_state.ind_seleccionadas_icp  = list(_parse_json_field(client.get("icp")) or {}).copy() \
-        if False else list((_parse_json_field(client.get("icp")) or {}).get("industrias", []))
+    st.session_state.ind_seleccionadas_icp  = list((_parse_json_field(client.get("icp")) or {}).get("industrias", []))
     st.session_state.custom_industrias_icp  = []
     st.session_state.custom_senales_icp     = []
+    # Borrar claves de widgets del tab ICP para que se reinicialicen con datos del nuevo cliente
+    for _k_icp in [
+        "multisel_industrias_icp", "icp_senales_multi", "ignorar_facturacion_cb",
+    ]:
+        if _k_icp in st.session_state:
+            del st.session_state[_k_icp]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LÓGICA DE NEGOCIO  (igual que antes, sin cambios)
