@@ -381,12 +381,15 @@ def select_client(client: dict):
     st.session_state.ind_seleccionadas_icp  = list((_parse_json_field(client.get("icp")) or {}).get("industrias", []))
     st.session_state.custom_industrias_icp  = []
     st.session_state.custom_senales_icp     = []
-    # Borrar claves de widgets del tab ICP para que se reinicialicen con datos del nuevo cliente
-    for _k_icp in [
+    # Borrar claves de widgets del tab ICP y BP para que se reinicialicen con datos del nuevo cliente
+    for _k_reset in [
+        # ICP
         "multisel_industrias_icp", "icp_senales_multi", "ignorar_facturacion_cb",
+        # BP
+        "cargos_excluir_input", "bp_cargos_sel",
     ]:
-        if _k_icp in st.session_state:
-            del st.session_state[_k_icp]
+        if _k_reset in st.session_state:
+            del st.session_state[_k_reset]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LÓGICA DE NEGOCIO  (igual que antes, sin cambios)
@@ -640,8 +643,10 @@ def get_company_recommendations(icp, buyer_persona, criterios, n=20, demo=False,
         "como Inc., S.A., LLC, S.A. de C.V., y Cía., Ltd., Corp., etc.). Ejemplo: si nombre_empresa es "
         "'Midway Dental Supply & Lab Inc.', nombre_linkedin sería 'Midway Dental'."
     )
+    # Calcular max_tokens dinámicamente: ~150 tokens por empresa + margen generoso
+    _mt = min(max(4096, n * 200 + 1024), 16000)
     resp = _claude_create(client,
-        model="claude-sonnet-4-5", max_tokens=4096,
+        model="claude-sonnet-4-5", max_tokens=_mt,
         messages=[{"role":"user","content":prompt}]
     )
     raw = re.sub(r"```(?:json)?\n?","",resp.content[0].text.strip()).strip("`").strip()
@@ -1234,11 +1239,18 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
 
     if titulos:
         # Keywords con doble-encoding (espacios → %2520, acentos → %25XX)
-        # Sin límite de cargos — Sales Navigator soporta URLs largas
-        kw_str = " OR ".join(
+        kw_include = " OR ".join(
             t.strip().replace('"', '').replace("(", "").replace(")", "")
             for t in titulos
         )
+        if titulos_excluir:
+            kw_not = " NOT ".join(
+                e.strip().replace('"', '').replace("(", "").replace(")", "")
+                for e in titulos_excluir if e.strip()
+            )
+            kw_str = f"({kw_include}) NOT ({kw_not})"
+        else:
+            kw_str = kw_include
         query_parts.append(f"keywords%3A{_snav(kw_str)}")
 
     if query_parts:
@@ -2794,15 +2806,17 @@ with tab1:
                 with _col_sg1:
                     _senal_custom = st.text_input(
                         "Agregar señal de fit",
-                        placeholder="Ej: Usa SAP, Exporta a LATAM, Tiene e-commerce…",
+                        placeholder="Ej: Alta rotación de personal, Problemas de seguridad, Reclamos frecuentes (separados por coma)",
                         label_visibility="collapsed",
                     )
                 with _col_sg2:
                     _add_senal = st.form_submit_button("➕", use_container_width=True)
                 if _add_senal and _senal_custom.strip():
-                    _ns = _senal_custom.strip()
-                    if _ns not in st.session_state.custom_senales_icp:
-                        st.session_state.custom_senales_icp.append(_ns)
+                    # Soportar múltiples señales separadas por coma
+                    _nuevas_senales = [s.strip() for s in _senal_custom.split(",") if s.strip()]
+                    for _ns in _nuevas_senales:
+                        if _ns not in st.session_state.custom_senales_icp:
+                            st.session_state.custom_senales_icp.append(_ns)
                     if "icp_senales_multi" in st.session_state:
                         del st.session_state["icp_senales_multi"]
                     st.rerun()
@@ -2972,36 +2986,51 @@ with tab2:
         else:
             st.caption("Ningún cargo seleccionado — busca abajo para agregar.")
 
-        # ── Buscador para agregar cargos ─────────────────────────────────────────
-        cargo_search = st.text_input("🔍 Buscar cargo para agregar",
-                                     placeholder="Ej: Sales, CTO, Marketing…",
+        # ── Buscador / agregar cargos (soporta comas para múltiples) ────────────
+        cargo_search = st.text_input("🔍 Buscar o agregar cargos",
+                                     placeholder="Ej: Gerente de Operaciones, Gerente Comercial, CTO (separados por coma)",
                                      key="cargo_search")
         if cargo_search:
-            _match = [c for c in _todos_cargos_final
-                      if cargo_search.lower() in c.lower() and c not in _sel]
-            _texto_libre = cargo_search.strip()
-            _ya_en_lista = _texto_libre in _sel
-
-            # Sugerencias del catálogo
-            if _match:
-                _add_cols = st.columns(min(3, len(_match)))
-                for _mi, _opt in enumerate(_match[:6]):
-                    if _add_cols[_mi % min(3, len(_match))].button(
-                            f"＋ {_opt}", key=f"add_c_{_opt}", use_container_width=True):
-                        _sel.append(_opt)
+            # Detectar si el usuario ingresó múltiples cargos separados por coma
+            _partes = [p.strip() for p in cargo_search.split(",") if p.strip()]
+            if len(_partes) > 1:
+                # Modo lote: agregar todos de una vez
+                _nuevos = [p for p in _partes if p not in _sel]
+                if _nuevos:
+                    if st.button(
+                        f"＋ Agregar {len(_partes)} cargos: {', '.join(_partes[:3])}{'…' if len(_partes)>3 else ''}",
+                        key="add_multi_cargo",
+                    ):
+                        for _nc in _nuevos:
+                            _sel.append(_nc)
                         st.rerun()
-
-            # Opción de texto libre — siempre visible si no está ya en la lista
-            if not _ya_en_lista:
-                if st.button(
-                    f'＋ Agregar "{_texto_libre}" exactamente como está',
-                    key="add_custom_cargo",
-                    help="Agrega el texto tal como lo escribiste, sin modificarlo",
-                ):
-                    _sel.append(_texto_libre)
-                    st.rerun()
+                else:
+                    st.caption("✅ Todos esos cargos ya están en la lista.")
             else:
-                st.caption(f"✅ «{_texto_libre}» ya está en la lista.")
+                # Modo búsqueda individual
+                _match = [c for c in _todos_cargos_final
+                          if cargo_search.lower() in c.lower() and c not in _sel]
+                _texto_libre = cargo_search.strip()
+                _ya_en_lista = _texto_libre in _sel
+
+                if _match:
+                    _add_cols = st.columns(min(3, len(_match)))
+                    for _mi, _opt in enumerate(_match[:6]):
+                        if _add_cols[_mi % min(3, len(_match))].button(
+                                f"＋ {_opt}", key=f"add_c_{_opt}", use_container_width=True):
+                            _sel.append(_opt)
+                            st.rerun()
+
+                if not _ya_en_lista:
+                    if st.button(
+                        f'＋ Agregar "{_texto_libre}" exactamente como está',
+                        key="add_custom_cargo",
+                        help="Agrega el texto tal como lo escribiste",
+                    ):
+                        _sel.append(_texto_libre)
+                        st.rerun()
+                else:
+                    st.caption(f"✅ «{_texto_libre}» ya está en la lista.")
 
         cargos = _sel  # compatibilidad con el resto del código
 
@@ -3209,6 +3238,18 @@ with tab3:
                                     continue
                             else:
                                 e["aprobada"] = True
+                            # Auto-generar nombre_linkedin limpio (sin sufijos legales) para Sales Nav
+                            if not e.get("nombre_linkedin") and e.get("nombre_empresa"):
+                                import re as _re_li
+                                _nl = _re_li.sub(
+                                    r'\s*[\|,]?\s*(Inc\.?|LLC\.?|S\.A\.?|S\.A\.S\.?|S\.A\. de C\.V\.?|'
+                                    r'S\.A\.C\.?|Ltda\.?|Ltd\.?|Corp\.?|GmbH|B\.V\.?|S\.L\.?|'
+                                    r'y Cía\.?|& Co\.?|and Co\.?|S\.p\.A\.?|S\.R\.L\.?|'
+                                    r'SpA|SAS|SRL|SPA|AG|NV|PLC|Pty\.?\s*Ltd\.?)\s*$',
+                                    '', e["nombre_empresa"], flags=_re_li.IGNORECASE
+                                ).strip()
+                                if _nl and _nl != e["nombre_empresa"]:
+                                    e["nombre_linkedin"] = _nl
                             empresas_up.append(e)
 
                         if _aprobada_col and _rechazadas_cliente:
@@ -3535,6 +3576,19 @@ with tab4:
                     st.caption(f"🔑 Keywords: {_kw_preview}")
             n_emp_url = len(_aprobadas)
             st.caption(f"🏢 Empresas ({n_emp_url}): {', '.join([e.get('nombre_linkedin') or e.get('nombre_empresa','') for e in _aprobadas[:4]])}{'…' if n_emp_url>4 else ''}")
+            # Advertir si alguna empresa tiene nombre muy corto o genérico (puede causar matches amplios en Sales Nav)
+            _nombres_cortos = [
+                e.get('nombre_linkedin') or e.get('nombre_empresa','')
+                for e in _aprobadas
+                if len((e.get('nombre_linkedin') or e.get('nombre_empresa','')).split()) <= 1
+                and len(e.get('nombre_linkedin') or e.get('nombre_empresa','')) <= 8
+            ]
+            if _nombres_cortos:
+                st.warning(
+                    f"⚠️ **Nombres cortos detectados:** {', '.join(_nombres_cortos[:5])} — "
+                    "Sales Navigator puede traer empresas de otras industrias con el mismo nombre. "
+                    "Considera editar el nombre en la pestaña **Empresas** para hacerlo más específico."
+                )
             # Mostrar países que se incluyen en el filtro de geografía
             _icp_paises_url = (icp_ or {}).get("geografias", [])
             if isinstance(_icp_paises_url, list) and _icp_paises_url:
