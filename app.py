@@ -382,11 +382,18 @@ def select_client(client: dict):
     st.session_state.custom_industrias_icp  = []
     st.session_state.custom_senales_icp     = []
     # Borrar claves de widgets del tab ICP y BP para que se reinicialicen con datos del nuevo cliente
+    # Borrar TODOS los widget keys de ICP y BP para que carguen los datos del nuevo cliente.
+    # Sin esto, Streamlit ignora index=/value= y mantiene el valor del cliente anterior.
     for _k_reset in [
         # ICP
-        "multisel_industrias_icp", "icp_senales_multi", "ignorar_facturacion_cb",
+        "multisel_industrias_icp", "icp_senales_multi",
+        "ignorar_facturacion_cb",
+        "emp_min", "emp_max",
+        "fac_min", "fac_max",
+        "linkedin_geo_id_input",
         # BP
         "cargos_excluir_input", "bp_cargos_sel",
+        "cargo_search", "add_multi_cargo",
     ]:
         if _k_reset in st.session_state:
             del st.session_state[_k_reset]
