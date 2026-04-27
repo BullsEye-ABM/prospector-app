@@ -1178,8 +1178,11 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
 
     def _snav(text: str) -> str:
         """Doble-encode para valores dentro del query de Sales Navigator.
-        Espacios → %2520, acentos → %25C3%25XX, etc."""
-        return _ul.quote(str(text).strip(), safe="").replace("%", "%25")
+        Normaliza acentos primero para reducir longitud de URL."""
+        import unicodedata as _ud
+        _t = _ud.normalize("NFKD", str(text).strip())
+        _t = "".join(c for c in _t if not _ud.combining(c))
+        return _ul.quote(_t, safe="").replace("%", "%25")
 
     titulos         = (buyer_persona or {}).get("cargos_objetivo",  [])
     titulos_excluir = (buyer_persona or {}).get("cargos_excluidos", [])
@@ -1223,7 +1226,6 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
             for p, gid in geo_entries
         )
         filter_parts.append(f"(type%3AGEOGRAPHY%2Cvalues%3AList({geo_vals}))")
-        filter_parts.append(f"(type%3AREGION%2Cvalues%3AList({geo_vals}))")
 
     # ── 3. Exclusión estricta de cargos (CURRENT_JOB_TITLE EXCLUDED) ──────────
     if titulos_excluir:
