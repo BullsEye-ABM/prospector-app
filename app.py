@@ -1089,6 +1089,70 @@ class LemlistClient:
         _enc = _ulp.quote(email, safe='')
         return self._patch(f"/leads/{_enc}", fields)
 
+# ── LinkedIn Company Lookup ────────────────────────────────────────────────────
+def buscar_linkedin_empresa(nombre: str, dominio: str = "") -> dict:
+    """
+    Busca el URL de LinkedIn de una empresa via Bing.
+    Retorna dict con 'linkedin_url' (str), 'li_slug' (str|None), 'li_id' (str|None).
+    """
+    import requests as _req, re as _re2
+    from urllib.parse import quote_plus as _qp
+
+    _hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+    result = {"linkedin_url": "", "li_slug": None, "li_id": None}
+
+    # Paso 1: Buscar en Bing la URL de LinkedIn
+    try:
+        _q = _qp(f'"{nombre}" site:linkedin.com/company')
+        _r = _req.get(f"https://www.bing.com/search?q={_q}", headers=_hdrs, timeout=8)
+        _slugs = _re2.findall(r'linkedin\.com/company/([a-zA-Z0-9_\-]+)', _r.text)
+        # Filtrar slugs genéricos
+        _slugs = [s for s in _slugs if s not in ("search", "in", "pub", "jobs", "company")]
+        if _slugs:
+            result["li_slug"] = _slugs[0]
+            result["linkedin_url"] = f"https://www.linkedin.com/company/{_slugs[0]}/"
+    except Exception:
+        pass
+
+    # Paso 2: Extraer ID numérico de la página de LinkedIn
+    if result["li_slug"]:
+        try:
+            _r2 = _req.get(result["linkedin_url"], headers=_hdrs, timeout=8, allow_redirects=True)
+            for _pat in [
+                r'"entityUrn":"urn:li:fsd_company:(\d+)"',
+                r'urn:li:company:(\d+)',
+                r'"companyId"\s*:\s*(\d+)',
+                r'"objectUrn":"urn:li:company:(\d+)"',
+            ]:
+                _m = _re2.search(_pat, _r2.text)
+                if _m:
+                    result["li_id"] = _m.group(1)
+                    break
+        except Exception:
+            pass
+
+    return result
+
+
+def extraer_li_id_desde_url(linkedin_url: str) -> str | None:
+    """Dado un URL de LinkedIn company, intenta extraer el ID numérico."""
+    import requests as _req, re as _re2
+    _hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        _r = _req.get(linkedin_url.strip(), headers=_hdrs, timeout=8, allow_redirects=True)
+        for _pat in [
+            r'"entityUrn":"urn:li:fsd_company:(\d+)"',
+            r'urn:li:company:(\d+)',
+            r'"companyId"\s*:\s*(\d+)',
+        ]:
+            _m = _re2.search(_pat, _r.text)
+            if _m:
+                return _m.group(1)
+    except Exception:
+        pass
+    return None
+
+
 # ── Sales Navigator URL Generator ─────────────────────────────────────────────
 _BATCH_SIZE = 15   # máx empresas por URL de Sales Navigator
 
@@ -1194,11 +1258,21 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
         _batch = empresas_aprobadas[_company_offset : _company_offset + _BATCH_SIZE]
         _batch = [e for e in _batch if e.get("nombre_empresa")]
         if _batch:
-            # Usar nombre_linkedin (nombre limpio para LinkedIn) si existe, si no el nombre original
-            comp_vals = "%2C".join(
-                f"(text%3A{_snav(e.get('nombre_linkedin') or e.get('nombre_empresa', ''))}%2CselectionType%3AINCLUDED)"
-                for e in _batch
-            )
+            _cvals = []
+            for _be in _batch:
+                _bname = _be.get("nombre_linkedin") or _be.get("nombre_empresa", "")
+                _bli_id = _be.get("li_id")
+                if _bli_id:
+                    # ID numérico → match exacto en Sales Navigator
+                    _cvals.append(
+                        f"(id%3A{_bli_id}%2Ctext%3A{_snav(_bname)}%2CselectionType%3AINCLUDED)"
+                    )
+                else:
+                    # Sin ID → texto (puede tener fuzzy match)
+                    _cvals.append(
+                        f"(text%3A{_snav(_bname)}%2CselectionType%3AINCLUDED)"
+                    )
+            comp_vals = "%2C".join(_cvals)
             filter_parts.append(f"(type%3ACURRENT_COMPANY%2Cvalues%3AList({comp_vals}))")
 
     # ── 2. Geografía: GEOGRAPHY + REGION (mismo ID, ambos requeridos) ─────────
@@ -3400,6 +3474,53 @@ with tab3:
                 if _ragente:
                     st.caption(f"🤖 Agente: {_ragente_raw}")
 
+                # ── URL de LinkedIn (editable + auto-búsqueda) ────────────────
+                _li_url_key = f"li_url_{_emp.get('dominio_web', _ei)}"
+                _li_id_key  = f"li_id_{_emp.get('dominio_web', _ei)}"
+                # Inicializar desde el objeto empresa si no está en session_state
+                if _li_url_key not in st.session_state:
+                    st.session_state[_li_url_key] = _emp.get("linkedin_url", "")
+                if _li_id_key not in st.session_state:
+                    st.session_state[_li_id_key] = _emp.get("li_id", "")
+
+                _li_col1, _li_col2 = st.columns([5, 1])
+                with _li_col1:
+                    _li_url_input = st.text_input(
+                        "🔗 URL LinkedIn empresa",
+                        value=st.session_state[_li_url_key],
+                        key=f"li_url_input_{_ei}",
+                        placeholder="https://www.linkedin.com/company/nombre-empresa/",
+                        label_visibility="collapsed",
+                    )
+                    # Sincronizar cambios manuales
+                    if _li_url_input != st.session_state[_li_url_key]:
+                        st.session_state[_li_url_key] = _li_url_input
+                        st.session_state[_li_id_key] = ""  # Reset ID si URL cambia
+                with _li_col2:
+                    if st.button("🔍", key=f"buscar_li_{_ei}",
+                                 help="Buscar URL de LinkedIn automáticamente",
+                                 use_container_width=True):
+                        with st.spinner("Buscando…"):
+                            _found = buscar_linkedin_empresa(
+                                _emp.get("nombre_empresa", ""),
+                                _emp.get("dominio_web", "")
+                            )
+                        if _found.get("linkedin_url"):
+                            st.session_state[_li_url_key] = _found["linkedin_url"]
+                            if _found.get("li_id"):
+                                st.session_state[_li_id_key] = _found["li_id"]
+                                st.success(f"✅ Encontrado con ID: {_found['li_id']}")
+                            else:
+                                st.info("URL encontrada — sin ID numérico (filtro menos exacto)")
+                            st.rerun()
+                        else:
+                            st.warning("No encontrado. Pega la URL manualmente.")
+                # Mostrar estado del ID
+                if st.session_state.get(_li_id_key):
+                    st.caption(f"✅ ID LinkedIn verificado: `{st.session_state[_li_id_key]}` — filtro exacto activo")
+                elif st.session_state.get(_li_url_key):
+                    st.caption("⚠️ URL sin ID numérico — haz clic en 🔍 para obtenerlo")
+
                 # Botones de acción debajo de la tarjeta
                 _bc1, _bc2, _bc3, _bsite = st.columns([2, 2, 6, 1])
                 if _bc1.button("✅ Aprobar", key=f"ap_e_{_ei}",
@@ -3432,9 +3553,21 @@ with tab3:
                 if st.button("💾 Confirmar selección", type="primary", key="confirmar_empresas"):
                     empresas_actualizadas = []
                     for _ei, _emp in enumerate(st.session_state.empresas):
-                        _ekey2 = f"emp_estado_{_emp.get('dominio_web', _ei)}"
+                        _ekey2    = f"emp_estado_{_emp.get('dominio_web', _ei)}"
+                        _li_url_k = f"li_url_{_emp.get('dominio_web', _ei)}"
+                        _li_id_k  = f"li_id_{_emp.get('dominio_web', _ei)}"
                         _emp_c = _emp.copy()
                         _emp_c["aprobada"] = bool(st.session_state.get(_ekey2, True))
+                        # Guardar URL e ID de LinkedIn si el usuario los validó
+                        _saved_url = st.session_state.get(_li_url_k, "").strip()
+                        _saved_id  = st.session_state.get(_li_id_k, "").strip()
+                        if _saved_url:
+                            _emp_c["linkedin_url"] = _saved_url
+                            # Si tiene URL pero no ID, intentar extraerlo ahora
+                            if not _saved_id:
+                                _saved_id = extraer_li_id_desde_url(_saved_url) or ""
+                            if _saved_id:
+                                _emp_c["li_id"] = _saved_id
                         empresas_actualizadas.append(_emp_c)
                     st.session_state.empresas = empresas_actualizadas
                     st.session_state.empresas_aprobadas = [
