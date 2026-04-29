@@ -3700,29 +3700,68 @@ with tab4:
         ]
         snav_url = _snav_batches[0]  # compatibilidad con código que usa snav_url más abajo
 
+        # ── Detectar si el cliente usa flujo manual de empresas ──────────────
+        _client_name = (st.session_state.selected_client or {}).get("name", "") or ""
+        _flujo_manual = "wecad4you" in _client_name.lower().replace(" ", "")
+
         # Mostrar URL(s) generadas
         with st.expander("🔗 Ver URL de Sales Navigator generada", expanded=True):
-            if _n_batches == 1:
-                st.text_area(
-                    "URL con empresas aprobadas + filtros de Buyer Persona:",
-                    value=snav_url, height=120,
+            if _flujo_manual:
+                # ── Flujo weCAD4you: URL sin empresas + lista manual ──────────
+                _snav_manual = generar_url_sales_navigator(bp, icp_, empresas_aprobadas=None)
+                st.info(
+                    "**Aquí tienes el listado de empresas recomendadas por la IA.** "
+                    "Dado que los nombres de empresa de este cliente incluyen palabras genéricas, "
+                    "el filtro automático de empresa no funciona correctamente en Sales Navigator.\n\n"
+                    "**¿Cómo proceder?**\n"
+                    "1. Abre la búsqueda en Sales Navigator con el botón de abajo\n"
+                    "2. En el filtro **«Current company»**, busca y selecciona **una a una** las empresas del listado\n"
+                    "3. Esto garantiza el match exacto con la empresa correcta en LinkedIn"
                 )
-                st.link_button("🚀 Abrir búsqueda en Sales Navigator", url=snav_url,
-                               type="primary",
-                               help="Abre la búsqueda en LinkedIn Sales Navigator en una nueva pestaña")
+                # Lista de empresas clara y copiable
+                _emp_names = [e.get("nombre_linkedin") or e.get("nombre_empresa", "") for e in _aprobadas if e.get("nombre_empresa")]
+                st.markdown("**📋 Empresas a filtrar en Sales Navigator:**")
+                for _en in _emp_names:
+                    st.markdown(f"- {_en}")
+                st.divider()
+                st.link_button("🚀 Abrir búsqueda en Sales Navigator (sin filtro de empresa)",
+                               url=_snav_manual, type="primary")
             else:
-                st.info(f"📋 {_total_aprob} empresas → divididas en **{_n_batches} búsquedas** de máx {_BATCH_SIZE} empresas c/u.")
-                for _bi, _burl in enumerate(_snav_batches):
-                    _start = _bi * _BATCH_SIZE + 1
-                    _end   = min((_bi + 1) * _BATCH_SIZE, _total_aprob)
-                    _bcols = st.columns([3, 1])
-                    with _bcols[0]:
-                        st.text_area(f"Búsqueda {_bi+1} (empresas {_start}–{_end}):",
-                                     value=_burl, height=100, key=f"snav_url_{_bi}")
-                    with _bcols[1]:
-                        st.link_button(f"🚀 Abrir búsqueda {_bi+1}",
-                                       url=_burl, use_container_width=True)
+                # ── Flujo estándar: URL con empresas embebidas ────────────────
+                if _n_batches == 1:
+                    st.text_area(
+                        "URL con empresas aprobadas + filtros de Buyer Persona:",
+                        value=snav_url, height=120,
+                    )
+                    st.link_button("🚀 Abrir búsqueda en Sales Navigator", url=snav_url,
+                                   type="primary",
+                                   help="Abre la búsqueda en LinkedIn Sales Navigator en una nueva pestaña")
+                else:
+                    st.info(f"📋 {_total_aprob} empresas → divididas en **{_n_batches} búsquedas** de máx {_BATCH_SIZE} empresas c/u.")
+                    for _bi, _burl in enumerate(_snav_batches):
+                        _start = _bi * _BATCH_SIZE + 1
+                        _end   = min((_bi + 1) * _BATCH_SIZE, _total_aprob)
+                        _bcols = st.columns([3, 1])
+                        with _bcols[0]:
+                            st.text_area(f"Búsqueda {_bi+1} (empresas {_start}–{_end}):",
+                                         value=_burl, height=100, key=f"snav_url_{_bi}")
+                        with _bcols[1]:
+                            st.link_button(f"🚀 Abrir búsqueda {_bi+1}",
+                                           url=_burl, use_container_width=True)
+                # Advertir nombres genéricos
+                _nombres_cortos = [
+                    e.get('nombre_linkedin') or e.get('nombre_empresa','')
+                    for e in _aprobadas
+                    if len((e.get('nombre_linkedin') or e.get('nombre_empresa','')).split()) <= 1
+                    and len(e.get('nombre_linkedin') or e.get('nombre_empresa','')) <= 8
+                ]
+                if _nombres_cortos:
+                    st.warning(
+                        f"⚠️ **Nombres cortos detectados:** {', '.join(_nombres_cortos[:5])} — "
+                        "Sales Navigator puede traer empresas de otras industrias con el mismo nombre."
+                    )
 
+            # Caption de keywords y países (siempre visible)
             cargos_lista    = bp.get("cargos_objetivo",  [])
             excluidos_lista = bp.get("cargos_excluidos", [])
             if cargos_lista:
@@ -3732,28 +3771,11 @@ with tab4:
                     st.caption(f"🔑 Keywords: {_kw_preview} NOT {_ex_preview}")
                 else:
                     st.caption(f"🔑 Keywords: {_kw_preview}")
-            n_emp_url = len(_aprobadas)
-            st.caption(f"🏢 Empresas ({n_emp_url}): {', '.join([e.get('nombre_linkedin') or e.get('nombre_empresa','') for e in _aprobadas[:4]])}{'…' if n_emp_url>4 else ''}")
-            # Advertir si alguna empresa tiene nombre muy corto o genérico (puede causar matches amplios en Sales Nav)
-            _nombres_cortos = [
-                e.get('nombre_linkedin') or e.get('nombre_empresa','')
-                for e in _aprobadas
-                if len((e.get('nombre_linkedin') or e.get('nombre_empresa','')).split()) <= 1
-                and len(e.get('nombre_linkedin') or e.get('nombre_empresa','')) <= 8
-            ]
-            if _nombres_cortos:
-                st.warning(
-                    f"⚠️ **Nombres cortos detectados:** {', '.join(_nombres_cortos[:5])} — "
-                    "Sales Navigator puede traer empresas de otras industrias con el mismo nombre. "
-                    "Considera editar el nombre en la pestaña **Empresas** para hacerlo más específico."
-                )
-            # Mostrar países que se incluyen en el filtro de geografía
             _icp_paises_url = (icp_ or {}).get("geografias", [])
             if isinstance(_icp_paises_url, list) and _icp_paises_url:
                 st.caption(f"🌍 Países en filtro: {', '.join(_icp_paises_url[:6])}{'…' if len(_icp_paises_url)>6 else ''}")
             else:
-                st.warning("⚠️ Sin filtro de países — el ICP no tiene geografías o la sesión se reinició. "
-                           "Ve a la pestaña **ICP** y vuelve a guardar para aplicar el filtro de países.")
+                st.warning("⚠️ Sin filtro de países — ve a la pestaña **ICP** y vuelve a guardar.")
 
         if DEMO:
             st.divider()
