@@ -1252,14 +1252,9 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
             t.strip().replace('"', '').replace("(", "").replace(")", "")
             for t in titulos
         )
-        if titulos_excluir:
-            kw_not = " NOT ".join(
-                e.strip().replace('"', '').replace("(", "").replace(")", "")
-                for e in titulos_excluir if e.strip()
-            )
-            kw_str = f"({kw_include}) NOT ({kw_not})"
-        else:
-            kw_str = kw_include
+        # Exclusiones SOLO via CURRENT_JOB_TITLE EXCLUDED en los filtros
+        # No usar NOT en keywords — busca en toda la experiencia pasada y causa 0 resultados
+        kw_str = kw_include
         query_parts.append(f"keywords%3A{_snav(kw_str)}")
 
     if query_parts:
