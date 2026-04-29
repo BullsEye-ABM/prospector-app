@@ -1114,43 +1114,54 @@ def buscar_linkedin_empresa(nombre: str, dominio: str = "") -> dict:
     except Exception:
         pass
 
-    # Paso 2: Extraer ID numérico de la página de LinkedIn
+    # Paso 2: Extraer ID via oEmbed (endpoint público, no requiere auth)
     if result["li_slug"]:
-        try:
-            _r2 = _req.get(result["linkedin_url"], headers=_hdrs, timeout=8, allow_redirects=True)
-            for _pat in [
-                r'"entityUrn":"urn:li:fsd_company:(\d+)"',
-                r'urn:li:company:(\d+)',
-                r'"companyId"\s*:\s*(\d+)',
-                r'"objectUrn":"urn:li:company:(\d+)"',
-            ]:
-                _m = _re2.search(_pat, _r2.text)
-                if _m:
-                    result["li_id"] = _m.group(1)
-                    break
-        except Exception:
-            pass
+        _li_id = _extraer_id_via_oembed(result["linkedin_url"], result["li_slug"], _hdrs, _re2, _req)
+        if _li_id:
+            result["li_id"] = _li_id
 
     return result
 
 
-def extraer_li_id_desde_url(linkedin_url: str) -> str | None:
-    """Dado un URL de LinkedIn company, intenta extraer el ID numérico."""
-    import requests as _req, re as _re2
-    _hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+def _extraer_id_via_oembed(linkedin_url: str, slug: str, _hdrs: dict, _re2, _req) -> str | None:
+    """Intenta obtener el ID numérico via el endpoint oEmbed público de LinkedIn."""
+    from urllib.parse import quote_plus as _qp2
+    # Método 1: oEmbed API (no requiere auth)
     try:
-        _r = _req.get(linkedin_url.strip(), headers=_hdrs, timeout=8, allow_redirects=True)
-        for _pat in [
-            r'"entityUrn":"urn:li:fsd_company:(\d+)"',
-            r'urn:li:company:(\d+)',
-            r'"companyId"\s*:\s*(\d+)',
-        ]:
-            _m = _re2.search(_pat, _r.text)
+        _oe_url = f"https://www.linkedin.com/oembed?url={_qp2(linkedin_url)}&format=json"
+        _r = _req.get(_oe_url, headers=_hdrs, timeout=8)
+        if _r.ok:
+            import json as _j
+            _data = _j.loads(_r.text)
+            _html = _data.get("html", "") + str(_data)
+            for _pat in [r'urn:li:company:(\d+)', r'urn:li:fsd_company:(\d+)',
+                         r'"companyId"\s*:\s*(\d+)', r'company%3A(\d+)']:
+                _m = _re2.search(_pat, _html)
+                if _m:
+                    return _m.group(1)
+    except Exception:
+        pass
+    # Método 2: Página de empresa con headers de bot-friendly
+    try:
+        _hdrs2 = {**_hdrs, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"}
+        _r2 = _req.get(linkedin_url, headers=_hdrs2, timeout=10, allow_redirects=True)
+        for _pat in [r'"entityUrn":"urn:li:fsd_company:(\d+)"', r'urn:li:company:(\d+)',
+                     r'"companyId"\s*:\s*(\d+)', r'"objectUrn":"urn:li:company:(\d+)"']:
+            _m = _re2.search(_pat, _r2.text)
             if _m:
                 return _m.group(1)
     except Exception:
         pass
     return None
+
+
+def extraer_li_id_desde_url(linkedin_url: str) -> str | None:
+    """Dado un URL de LinkedIn company, intenta extraer el ID numérico."""
+    import requests as _req, re as _re2
+    _hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"}
+    _m_slug = _re2.search(r'linkedin\.com/company/([a-zA-Z0-9_\-]+)', linkedin_url or "")
+    _slug = _m_slug.group(1) if _m_slug else ""
+    return _extraer_id_via_oembed(linkedin_url.strip(), _slug, _hdrs, _re2, _req)
 
 
 # ── Sales Navigator URL Generator ─────────────────────────────────────────────
@@ -3520,14 +3531,16 @@ with tab3:
                             st.session_state[_li_url_key] = _found["linkedin_url"]
                             if _found.get("li_id"):
                                 st.session_state[_li_id_key] = _found["li_id"]
-                                st.success(f"✅ Encontrado con ID: {_found['li_id']}")
+                                st.success(f"✅ ID LinkedIn: {_found['li_id']} — filtro 100% exacto")
                             else:
-                                st.info("URL encontrada — sin ID numérico (filtro menos exacto)")
+                                st.info("✅ URL encontrada — filtro por nombre exacto del perfil")
                             st.rerun()
                         else:
                             st.warning("No encontrado. Pega la URL manualmente.")
-                if st.session_state.get(_li_url_key):
-                    st.caption("✅ URL validada — Sales Navigator usará el nombre exacto de LinkedIn")
+                if st.session_state.get(_li_id_key):
+                    st.caption(f"✅ ID LinkedIn: `{st.session_state[_li_id_key]}` — filtro exacto activo")
+                elif st.session_state.get(_li_url_key):
+                    st.caption("✅ URL validada — filtro por nombre exacto del perfil LinkedIn")
 
                 # Botones de acción debajo de la tarjeta
                 _bc1, _bc2, _bc3, _bsite = st.columns([2, 2, 6, 1])
