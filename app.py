@@ -1258,17 +1258,28 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
         _batch = empresas_aprobadas[_company_offset : _company_offset + _BATCH_SIZE]
         _batch = [e for e in _batch if e.get("nombre_empresa")]
         if _batch:
+            import re as _re_slug
+            def _nombre_desde_url(li_url: str) -> str:
+                """Extrae nombre limpio desde slug de URL de LinkedIn.
+                'https://www.linkedin.com/company/frontier-dental-laboratory/' → 'Frontier Dental Laboratory'
+                """
+                _m = _re_slug.search(r'linkedin\.com/company/([a-zA-Z0-9_\-]+)', li_url or "")
+                if _m:
+                    return _m.group(1).replace("-", " ").title()
+                return ""
+
             _cvals = []
             for _be in _batch:
-                _bname = _be.get("nombre_linkedin") or _be.get("nombre_empresa", "")
+                # Prioridad: nombre del slug > nombre_linkedin > nombre_empresa
+                _li_url = _be.get("linkedin_url", "")
+                _slug_name = _nombre_desde_url(_li_url)
+                _bname = _slug_name or _be.get("nombre_linkedin") or _be.get("nombre_empresa", "")
                 _bli_id = _be.get("li_id")
                 if _bli_id:
-                    # ID numérico → match exacto en Sales Navigator
                     _cvals.append(
                         f"(id%3A{_bli_id}%2Ctext%3A{_snav(_bname)}%2CselectionType%3AINCLUDED)"
                     )
                 else:
-                    # Sin ID → texto (puede tener fuzzy match)
                     _cvals.append(
                         f"(text%3A{_snav(_bname)}%2CselectionType%3AINCLUDED)"
                     )
@@ -3515,11 +3526,8 @@ with tab3:
                             st.rerun()
                         else:
                             st.warning("No encontrado. Pega la URL manualmente.")
-                # Mostrar estado del ID
-                if st.session_state.get(_li_id_key):
-                    st.caption(f"✅ ID LinkedIn verificado: `{st.session_state[_li_id_key]}` — filtro exacto activo")
-                elif st.session_state.get(_li_url_key):
-                    st.caption("⚠️ URL sin ID numérico — haz clic en 🔍 para obtenerlo")
+                if st.session_state.get(_li_url_key):
+                    st.caption("✅ URL validada — Sales Navigator usará el nombre exacto de LinkedIn")
 
                 # Botones de acción debajo de la tarjeta
                 _bc1, _bc2, _bc3, _bsite = st.columns([2, 2, 6, 1])
