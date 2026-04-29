@@ -3254,15 +3254,55 @@ with tab3:
                                          _excl_perm_dominios)
                         _razones_rech = [r.get("razon_rechazo","").strip() for r in st.session_state.empresas_rechazadas if r.get("razon_rechazo","").strip()]
                         _lookalike = (st.session_state.selected_client or {}).get("lookalike_companies") or None
+                        _n_solicitar = st.session_state.n_empresas
+                        _es_wecad = "wecad4you" in (client_name or "").lower().replace(" ", "")
+                        if _es_wecad:
+                            # Para weCAD4you pedimos el doble para compensar las que no tienen LinkedIn
+                            _n_solicitar = min(st.session_state.n_empresas * 2, 40)
                         empresas = get_company_recommendations(
                             st.session_state.icp, st.session_state.buyer_persona,
                             st.session_state.criterios,
-                            n=st.session_state.n_empresas, demo=DEMO,
+                            n=_n_solicitar, demo=DEMO,
                             propuesta_de_valor=st.session_state.propuesta_de_valor,
                             excluir_dominios=ya_vistos,
                             excluir_nombres=_excl_perm_nombres or None,
                             razones_rechazo=_razones_rech or None,
                             lookalike_empresas=_lookalike)
+
+                        # ── Para weCAD4you: verificar que cada empresa existe en LinkedIn ──
+                        if _es_wecad and not DEMO:
+                            import requests as _rq_li, re as _re_li
+                            from urllib.parse import quote_plus as _qp_li
+                            _hdrs_li = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"}
+                            _prog_li = st.progress(0, text="Verificando existencia en LinkedIn…")
+                            _verificadas = []
+                            for _vi, _emp in enumerate(empresas):
+                                _prog_li.progress((_vi + 1) / len(empresas),
+                                                  text=f"Verificando «{_emp.get('nombre_empresa','')}»…")
+                                _nombre_buscar = _emp.get("nombre_linkedin") or _emp.get("nombre_empresa", "")
+                                try:
+                                    _q_li = _qp_li(f"{_nombre_buscar} site:linkedin.com/company")
+                                    _r_li = _rq_li.get(
+                                        f"https://www.bing.com/search?q={_q_li}",
+                                        headers=_hdrs_li, timeout=8
+                                    )
+                                    _slugs_li = _re_li.findall(
+                                        r'linkedin\.com/company/([a-zA-Z0-9_\-]+)',
+                                        _r_li.text
+                                    )
+                                    if _slugs_li:
+                                        _emp["linkedin_url"] = f"https://www.linkedin.com/company/{_slugs_li[0]}"
+                                        _emp["nombre_linkedin"] = _emp.get("nombre_linkedin") or _nombre_buscar
+                                        _verificadas.append(_emp)
+                                except Exception:
+                                    pass  # Si falla la búsqueda, descartamos la empresa
+                            _prog_li.empty()
+                            # Recortar al número solicitado originalmente
+                            empresas = _verificadas[:st.session_state.n_empresas]
+                            _n_descartadas = _n_solicitar - len(_verificadas)
+                            if _n_descartadas > 0:
+                                st.info(f"🔍 {len(empresas)} empresas verificadas en LinkedIn ({_n_descartadas} descartadas por no tener perfil)")
+
                         st.session_state.empresas           = empresas
                         st.session_state.empresas_aprobadas = []
                         st.session_state.done_empresas      = False
