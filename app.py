@@ -3254,93 +3254,15 @@ with tab3:
                                          _excl_perm_dominios)
                         _razones_rech = [r.get("razon_rechazo","").strip() for r in st.session_state.empresas_rechazadas if r.get("razon_rechazo","").strip()]
                         _lookalike = (st.session_state.selected_client or {}).get("lookalike_companies") or None
-                        _n_objetivo = st.session_state.n_empresas
-                        _es_wecad = "wecad4you" in (client_name or "").lower().replace(" ", "")
                         empresas = get_company_recommendations(
                             st.session_state.icp, st.session_state.buyer_persona,
                             st.session_state.criterios,
-                            n=_n_objetivo, demo=DEMO,
+                            n=st.session_state.n_empresas, demo=DEMO,
                             propuesta_de_valor=st.session_state.propuesta_de_valor,
                             excluir_dominios=ya_vistos,
                             excluir_nombres=_excl_perm_nombres or None,
                             razones_rechazo=_razones_rech or None,
                             lookalike_empresas=_lookalike)
-
-                        # ── Para weCAD4you: verificar LinkedIn en loop hasta tener n empresas ──
-                        if _es_wecad and not DEMO:
-                            import requests as _rq_li, re as _re_li
-                            from urllib.parse import quote_plus as _qp_li
-                            _hdrs_li = {
-                                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                                "Accept-Language": "en-US,en;q=0.5",
-                            }
-                            _li_slug_re = _re_li.compile(r'linkedin\.com/company/([a-zA-Z0-9][a-zA-Z0-9_\-]{2,})')
-                            _SLUGS_INVALIDOS = {"search","pub","in","jobs","posts","about","mynetwork","feed","notifications","messaging","company"}
-
-                            def _buscar_linkedin_slug(nombre):
-                                for _motor, _url_tpl in [
-                                    ("ddg",  "https://html.duckduckgo.com/html/?q={q}"),
-                                    ("ddg2", "https://lite.duckduckgo.com/lite/?q={q}"),
-                                ]:
-                                    try:
-                                        _q = _qp_li(f'"{nombre}" site:linkedin.com/company')
-                                        _r = _rq_li.get(_url_tpl.format(q=_q), headers=_hdrs_li, timeout=10)
-                                        _slugs = [s for s in _li_slug_re.findall(_r.text) if s not in _SLUGS_INVALIDOS]
-                                        if _slugs:
-                                            return _slugs[0]
-                                    except Exception:
-                                        pass
-                                return None
-
-                            _prog_li = st.progress(0, text="Verificando existencia en LinkedIn…")
-                            _verificadas = []
-                            _dominios_intentados = set(ya_vistos)
-                            _lote_actual = empresas
-                            _ronda = 0
-                            _max_rondas = 4
-
-                            while len(_verificadas) < _n_objetivo and _ronda < _max_rondas:
-                                _ronda += 1
-                                for _emp in _lote_actual:
-                                    if len(_verificadas) >= _n_objetivo:
-                                        break
-                                    _prog_li.progress(
-                                        min(len(_verificadas) / _n_objetivo, 0.99),
-                                        text=f"Verificando «{_emp.get('nombre_empresa','')}»… ({len(_verificadas)}/{_n_objetivo})"
-                                    )
-                                    _dom = _emp.get("dominio_web", "")
-                                    if _dom:
-                                        _dominios_intentados.add(_dom)
-                                    _nombre_buscar = _emp.get("nombre_linkedin") or _emp.get("nombre_empresa", "")
-                                    _slug = _buscar_linkedin_slug(_nombre_buscar)
-                                    if _slug:
-                                        _emp["linkedin_url"] = f"https://www.linkedin.com/company/{_slug}"
-                                        _emp["nombre_linkedin"] = _emp.get("nombre_linkedin") or _nombre_buscar
-                                        _verificadas.append(_emp)
-
-                                if len(_verificadas) < _n_objetivo and _ronda < _max_rondas:
-                                    _faltan = _n_objetivo - len(_verificadas)
-                                    _prog_li.progress(
-                                        len(_verificadas) / _n_objetivo,
-                                        text=f"Buscando {_faltan} empresas más con LinkedIn…"
-                                    )
-                                    try:
-                                        _lote_actual = get_company_recommendations(
-                                            st.session_state.icp, st.session_state.buyer_persona,
-                                            st.session_state.criterios,
-                                            n=_faltan * 2, demo=DEMO,
-                                            propuesta_de_valor=st.session_state.propuesta_de_valor,
-                                            excluir_dominios=list(_dominios_intentados),
-                                            excluir_nombres=_excl_perm_nombres or None,
-                                            razones_rechazo=_razones_rech or None,
-                                            lookalike_empresas=_lookalike)
-                                    except Exception:
-                                        break
-
-                            _prog_li.empty()
-                            empresas = _verificadas[:_n_objetivo]
-                            st.info(f"🔍 {len(empresas)}/{_n_objetivo} empresas con perfil LinkedIn verificado")
 
                         st.session_state.empresas           = empresas
                         st.session_state.empresas_aprobadas = []
