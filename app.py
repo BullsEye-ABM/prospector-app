@@ -344,19 +344,38 @@ def _parse_json_field(val):
 
 def select_client(client: dict):
     """Carga un cliente y pre-llena ICP/BP en session state."""
-    st.session_state.selected_client_id = client["id"]
-    st.session_state.selected_client    = client
+    # Siempre cargar datos FRESCOS de Supabase al seleccionar cliente.
+    # Esto evita que el caché de session_state muestre datos de otro cliente
+    # cuando múltiples usuarios trabajan simultáneamente.
+    _fresh = client
+    try:
+        _db_sel = get_db()
+        if _db_sel:
+            _rows = _db_sel._get("/clients", {"id": f"eq.{client['id']}", "limit": "1"})
+            if _rows:
+                _fresh = _rows[0]
+                # Actualizar también en clients_list para que el resto de la sesión use datos frescos
+                _cl = st.session_state.get("clients_list") or []
+                for _i, _c in enumerate(_cl):
+                    if str(_c.get("id")) == str(_fresh["id"]):
+                        _cl[_i] = _fresh
+                        break
+    except Exception:
+        pass
+
+    st.session_state.selected_client_id = _fresh["id"]
+    st.session_state.selected_client    = _fresh
     # Pre-llenar pipeline con datos guardados del cliente
     # _parse_json_field por si el campo llega como string en vez de dict/list
-    st.session_state.propuesta_de_valor = _parse_json_field(client.get("propuesta_de_valor"))
-    st.session_state.icp                = _parse_json_field(client.get("icp"))
-    st.session_state.buyer_persona      = _parse_json_field(client.get("buyer_persona"))
-    st.session_state.criterios          = _parse_json_field(client.get("criterios"))
-    st.session_state.done_pv            = bool(client.get("propuesta_de_valor"))
-    st.session_state.done_icp           = bool(client.get("icp"))
-    st.session_state.done_bp            = bool(client.get("buyer_persona"))
+    st.session_state.propuesta_de_valor = _parse_json_field(_fresh.get("propuesta_de_valor"))
+    st.session_state.icp                = _parse_json_field(_fresh.get("icp"))
+    st.session_state.buyer_persona      = _parse_json_field(_fresh.get("buyer_persona"))
+    st.session_state.criterios          = _parse_json_field(_fresh.get("criterios"))
+    st.session_state.done_pv            = bool(_fresh.get("propuesta_de_valor"))
+    st.session_state.done_icp           = bool(_fresh.get("icp"))
+    st.session_state.done_bp            = bool(_fresh.get("buyer_persona"))
     # Restaurar empresas activas desde Supabase (persisten hasta marcarlas como prospectadas)
-    _empresas_guardadas = _parse_json_field(client.get("empresas_activas")) or []
+    _empresas_guardadas = _parse_json_field(_fresh.get("empresas_activas")) or []
     st.session_state.empresas            = _empresas_guardadas
     st.session_state.empresas_aprobadas  = [e for e in _empresas_guardadas if e.get("aprobada", True)]
     st.session_state.done_empresas       = bool(_empresas_guardadas)
@@ -368,17 +387,17 @@ def select_client(client: dict):
     st.session_state.done_enrich               = False
     st.session_state.clay_pushed               = False
     st.session_state.contacts_pushed_to_enrich = False
-    st.session_state.processed_domains    = client.get("processed_domains",  []) or []
-    st.session_state.processed_contacts   = client.get("processed_contacts", []) or []
+    st.session_state.processed_domains    = _fresh.get("processed_domains",  []) or []
+    st.session_state.processed_contacts   = _fresh.get("processed_contacts", []) or []
     st.session_state.contactos_aprobacion = {}
     st.session_state.lemlist_campaign_id  = ""
     st.session_state.lemlist_campaign_name= ""
-    st.session_state.empresas_rechazadas  = client.get("empresas_rechazadas", []) or []
+    st.session_state.empresas_rechazadas  = _fresh.get("empresas_rechazadas", []) or []
     # Resetear selector de cargos del Buyer Persona al cambiar de cliente
     if "bp_cargos_sel" in st.session_state:
         del st.session_state["bp_cargos_sel"]
     # Resetear selección temporal de ICP al cambiar cliente
-    st.session_state.ind_seleccionadas_icp  = list((_parse_json_field(client.get("icp")) or {}).get("industrias", []))
+    st.session_state.ind_seleccionadas_icp  = list((_parse_json_field(_fresh.get("icp")) or {}).get("industrias", []))
     st.session_state.custom_industrias_icp  = []
     st.session_state.custom_senales_icp     = []
     # Borrar claves de widgets del tab ICP y BP para que se reinicialicen con datos del nuevo cliente
