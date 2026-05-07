@@ -1342,39 +1342,54 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
         )
         filter_parts.append(f"(type%3AGEOGRAPHY%2Cvalues%3AList({geo_vals}))")
 
-    # ── 3. Exclusión estricta de cargos (CURRENT_JOB_TITLE EXCLUDED) ──────────
-    if titulos_excluir:
-        excl_vals = "%2C".join(
-            f"(text%3A{_snav(e)}%2CselectionType%3AEXCLUDED)"
-            for e in titulos_excluir if e.strip()
-        )
-        if excl_vals:
-            # Sales Navigator requiere AMBOS filtros para que la exclusión funcione
-            filter_parts.append(f"(type%3ACURRENT_JOB_TITLE%2Cvalues%3AList({excl_vals}))")
-            filter_parts.append(f"(type%3ACURRENT_TITLE%2Cvalues%3AList({excl_vals}))")
+    # ── 3-4. Construir URL con exclusiones y keywords; recortar si excede límite HTTP ──
+    # El límite HTTP es 16384 bytes; usamos 15000 como margen seguro.
+    _MAX_URL = 15000
+    _base_filter_parts = list(filter_parts)  # empresa + geo, sin exclusiones aún
 
-    # ── 4. Construir query final: filters primero, keywords después ────────────
-    # Formato correcto verificado con URLs manuales de Sales Navigator:
-    # ?query=(filters%3AList(...)%2Ckeywords%3AKEYWORD1%2520OR%2520KEYWORD2)
-    query_parts = []
+    def _build_url(excl_list, tit_list):
+        _fp = list(_base_filter_parts)
+        if excl_list:
+            excl_vals = "%2C".join(
+                f"(text%3A{_snav(e)}%2CselectionType%3AEXCLUDED)"
+                for e in excl_list if e.strip()
+            )
+            if excl_vals:
+                # Sales Navigator requiere AMBOS filtros para que la exclusión funcione
+                _fp.append(f"(type%3ACURRENT_JOB_TITLE%2Cvalues%3AList({excl_vals}))")
+                _fp.append(f"(type%3ACURRENT_TITLE%2Cvalues%3AList({excl_vals}))")
+        _qp = []
+        if _fp:
+            _qp.append(f"filters%3AList({('%2C').join(_fp)})")
+        if tit_list:
+            # Exclusiones SOLO via CURRENT_JOB_TITLE EXCLUDED en los filtros
+            # No usar NOT en keywords — busca en toda la experiencia pasada y causa 0 resultados
+            kw_str = " OR ".join(
+                t.strip().replace('"', '').replace("(", "").replace(")", "")
+                for t in tit_list
+            )
+            _qp.append(f"keywords%3A{_snav(kw_str)}")
+        if _qp:
+            return f"https://www.linkedin.com/sales/search/people?query=({'%2C'.join(_qp)})"
+        return "https://www.linkedin.com/sales/search/people"
 
-    if filter_parts:
-        query_parts.append(f"filters%3AList({('%2C').join(filter_parts)})")
+    url = _build_url(titulos_excluir, titulos)
 
-    if titulos:
-        # Keywords con doble-encoding (espacios → %2520, acentos → %25XX)
-        kw_include = " OR ".join(
-            t.strip().replace('"', '').replace("(", "").replace(")", "")
-            for t in titulos
-        )
-        # Exclusiones SOLO via CURRENT_JOB_TITLE EXCLUDED en los filtros
-        # No usar NOT en keywords — busca en toda la experiencia pasada y causa 0 resultados
-        kw_str = kw_include
-        query_parts.append(f"keywords%3A{_snav(kw_str)}")
+    if len(url) > _MAX_URL:
+        # Reducir exclusiones de una en una hasta que la URL quepa
+        _excl = list(titulos_excluir)
+        while _excl and len(url) > _MAX_URL:
+            _excl.pop()
+            url = _build_url(_excl, titulos)
 
-    if query_parts:
-        return f"https://www.linkedin.com/sales/search/people?query=({'%2C'.join(query_parts)})"
-    return "https://www.linkedin.com/sales/search/people"
+    if len(url) > _MAX_URL:
+        # Si aún es muy larga, reducir también los keywords de una en una
+        _tit = list(titulos)
+        while _tit and len(url) > _MAX_URL:
+            _tit.pop()
+            url = _build_url([], _tit)
+
+    return url
 
 
 # ── Google Sheets ──────────────────────────────────────────────────────────────
