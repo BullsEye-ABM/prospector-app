@@ -3764,6 +3764,11 @@ with tab4:
             else:
                 # ── Flujo estándar: URL con empresas embebidas ────────────────
                 if _n_batches == 1:
+                    _url_len = len(snav_url)
+                    if _url_len > 15000:
+                        st.error(f"⚠️ URL demasiado larga: {_url_len} bytes (límite: 15000). Revisa cargos_excluidos y cargos_objetivo.")
+                    else:
+                        st.caption(f"📏 Longitud URL: {_url_len} bytes (OK)")
                     st.text_area(
                         "URL con empresas aprobadas + filtros de Buyer Persona:",
                         value=snav_url, height=120,
