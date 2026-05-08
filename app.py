@@ -1343,8 +1343,8 @@ def generar_url_sales_navigator(buyer_persona: dict, icp: dict,
         filter_parts.append(f"(type%3AGEOGRAPHY%2Cvalues%3AList({geo_vals}))")
 
     # ── 3-4. Construir URL con exclusiones y keywords; recortar si excede límite HTTP ──
-    # El límite HTTP es 16384 bytes; usamos 15000 como margen seguro.
-    _MAX_URL = 15000
+    # El límite HTTP es 16384 bytes; usamos 8000 como margen conservador.
+    _MAX_URL = 8000
     _base_filter_parts = list(filter_parts)  # empresa + geo, sin exclusiones aún
 
     def _build_url(excl_list, tit_list):
@@ -3781,8 +3781,13 @@ with tab4:
                     for _bi, _burl in enumerate(_snav_batches):
                         _start = _bi * _BATCH_SIZE + 1
                         _end   = min((_bi + 1) * _BATCH_SIZE, _total_aprob)
+                        _blen  = len(_burl)
                         _bcols = st.columns([3, 1])
                         with _bcols[0]:
+                            if _blen > 8000:
+                                st.error(f"⚠️ Búsqueda {_bi+1}: URL muy larga ({_blen} bytes)")
+                            else:
+                                st.caption(f"📏 Búsqueda {_bi+1}: {_blen} bytes (OK)")
                             st.text_area(f"Búsqueda {_bi+1} (empresas {_start}–{_end}):",
                                          value=_burl, height=100, key=f"snav_url_{_bi}")
                         with _bcols[1]:
